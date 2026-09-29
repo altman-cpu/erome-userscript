@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Neural Sync — Memory Workspace for Creators</title>
+<link rel="stylesheet" href="neural-sync.css"/>
+</head>
+<body>
+
+<!-- ============== SPLASH ============== -->
+<div id="splash" class="splash">
+  <div class="splash-inner">
+    <div class="logo-glow">
+      <svg viewBox="0 0 120 120" width="120" height="120">
+        <defs>
+          <radialGradient id="g1" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#7ef" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#47f" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <circle cx="60" cy="60" r="55" fill="url(#g1)"/>
+        <circle cx="30" cy="40" r="4" fill="#aef"/>
+        <circle cx="70" cy="30" r="3" fill="#aef"/>
+        <circle cx="90" cy="70" r="5" fill="#aef"/>
+        <circle cx="40" cy="80" r="3" fill="#aef"/>
+        <circle cx="60" cy="60" r="6" fill="#fff"/>
+        <line x1="30" y1="40" x2="60" y2="60" stroke="#aef" stroke-width="0.8" opacity="0.7"/>
+        <line x1="70" y1="30" x2="60" y2="60" stroke="#aef" stroke-width="0.8" opacity="0.7"/>
+        <line x1="90" y1="70" x2="60" y2="60" stroke="#aef" stroke-width="0.8" opacity="0.7"/>
+        <line x1="40" y1="80" x2="60" y2="60" stroke="#aef" stroke-width="0.8" opacity="0.7"/>
+        <line x1="30" y1="40" x2="70" y2="30" stroke="#aef" stroke-width="0.4" opacity="0.4"/>
+        <line x1="70" y1="30" x2="90" y2="70" stroke="#aef" stroke-width="0.4" opacity="0.4"/>
+        <line x1="90" y1="70" x2="40" y2="80" stroke="#aef" stroke-width="0.4" opacity="0.4"/>
+        <line x1="40" y1="80" x2="30" y2="40" stroke="#aef" stroke-width="0.4" opacity="0.4"/>
+      </svg>
+    </div>
+    <h1>NEURAL SYNC</h1>
+    <p class="tagline">Ideas held in memory — not on a chain.</p>
+    <p class="sub">A controlled workspace for creators, coders & programmers. Your thoughts link associatively, locally, always yours.</p>
+
+    <div class="persona-picker">
+      <label>Step into your mode:</label>
+      <div class="personas">
+        <button class="persona-btn" data-persona="creator">
+          <span class="pi">✍️</span>
+          <span class="pt">Content Creator</span>
+          <span class="pd">Stories · Scripts · Posts</span>
+        </button>
+        <button class="persona-btn" data-persona="coder">
+          <span class="pi">⌨️</span>
+          <span class="pt">Coder</span>
+          <span class="pd">Functions · Modules · Snippets</span>
+        </button>
+        <button class="persona-btn" data-persona="programmer">
+          <span class="pi">🧠</span>
+          <span class="pt">Programmer</span>
+          <span class="pd">Systems · Architecture · Design</span>
+        </button>
+      </div>
+    </div>
+    <button id="enterBtn" class="enter-btn" disabled>Initialize Memory →</button>
+  </div>
+</div>
+
+<!-- ============== MAIN APP ============== -->
+<div id="app" class="app hidden">
+
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">NEURAL SYNC</span>
+      <span class="brand-persona" id="personaBadge"></span>
+    </div>
+    <div class="search-wrap">
+      <input id="searchInput" type="text" placeholder="⌕  recall a memory (semantic search)…" autocomplete="off"/>
+      <div id="searchResults" class="search-results hidden"></div>
+    </div>
+    <div class="top-actions">
+      <button id="newIdeaBtn" class="btn primary">+ New Memory</button>
+      <button id="graphBtn" class="btn">🕸 Graph</button>
+      <button id="exportBtn" class="btn">⇩ Export</button>
+      <button id="importBtn" class="btn">⇪ Import</button>
+      <button id="resetBtn" class="btn danger-outline">⟲ Reset</button>
+      <input type="file" id="importFile" accept=".json" hidden/>
+    </div>
+  </header>
+
+  <!-- Sidebar: Memory Streams -->
+  <aside class="sidebar">
+    <div class="side-section">
+      <h3>Pulse</h3>
+      <div class="pulse">
+        <div class="pulse-item"><span class="pl">Memories</span><span id="statMemories" class="pv">0</span></div>
+        <div class="pulse-item"><span class="pl">Links</span><span id="statLinks" class="pv">0</span></div>
+        <div class="pulse-item"><span class="pl">Coherence</span><span id="statCoherence" class="pv">0%</span></div>
+        <div class="pulse-item"><span class="pl">Focus</span><span id="statFocus" class="pv">—</span></div>
+      </div>
+    </div>
+
+    <div class="side-section">
+      <h3>Streams</h3>
+      <ul id="streamList" class="stream-list">
+        <li data-stream="all" class="active">◉ All Memories</li>
+        <li data-stream="recent">⏾ Recent (24h)</li>
+        <li data-stream="floating">◌ Floating (unlinked)</li>
+        <li data-stream="code">{ } Code Fragments</li>
+        <li data-stream="notes">✎ Notes</li>
+        <li data-stream="drafts">✑ Drafts</li>
+        <li data-stream="archived">▤ Archived</li>
+      </ul>
+    </div>
+
+    <div class="side-section">
+      <h3>Tags</h3>
+      <div id="tagCloud" class="tag-cloud"></div>
+    </div>
+
+    <div class="side-section">
+      <h3>Neural Suggestions</h3>
+      <div id="suggestions" class="suggestions">
+        <p class="muted">Create a memory to see associative links…</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Canvas -->
+  <main class="canvas">
+    <div id="welcome" class="welcome">
+      <h2>Your memory is blank.</h2>
+      <p>Press <kbd>+ New Memory</kbd> to capture an idea. Memories auto-link by meaning — no blockchain, no servers, no keys. Just synapses.</p>
+      <div class="welcome-ideas" id="welcomeIdeas"></div>
+    </div>
+    <div id="memoryGrid" class="memory-grid hidden"></div>
+  </main>
+
+</div>
+
+<!-- ============== GRAPH OVERLAY ============== -->
+<div id="graphOverlay" class="graph-overlay hidden">
+  <div class="graph-header">
+    <h2>Neural Graph</h2>
+    <div>
+      <label class="chk"><input type="checkbox" id="showLabels" checked/> Labels</label>
+      <button id="closeGraph" class="btn">Close</button>
+    </div>
+  </div>
+  <canvas id="graphCanvas"></canvas>
+</div>
+
+<!-- ============== MEMORY EDITOR MODAL ============== -->
+<div id="editorModal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="editorTitle">New Memory</h3>
+      <button id="closeEditor" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Title</label>
+        <input id="mTitle" type="text" placeholder="What is this thought?"/>
+      </div>
+      <div class="form-row">
+        <label>Type</label>
+        <div class="type-picker" id="typePicker">
+          <button data-type="note" class="tbtn active">✎ Note</button>
+          <button data-type="code" class="tbtn">{ } Code</button>
+          <button data-type="draft" class="tbtn">✑ Draft</button>
+          <button data-type="idea" class="tbtn">💡 Idea</button>
+          <button data-type="reference" class="tbtn">🔗 Ref</button>
+        </div>
+      </div>
+      <div class="form-row flex-grow">
+        <label>Content</label>
+        <textarea id="mContent" rows="10" placeholder="The memory itself — write code, prose, fragments, plans…"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Tags <span class="muted">(comma separated)</span></label>
+        <input id="mTags" type="text" placeholder="e.g. ui, recursion, hook, opening"/>
+      </div>
+      <div class="form-row">
+        <label>Explicit Links <span class="muted">(type to find memories…)</span></label>
+        <div id="linkedChips" class="linked-chips"></div>
+        <input id="linkSearch" type="text" placeholder="Search memories to link…"/>
+        <div id="linkResults" class="link-results hidden"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button id="deleteMem" class="btn danger hidden">Delete</button>
+      <div style="flex:1"></div>
+      <button id="saveMem" class="btn primary">Save to Memory</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MEMORY DETAIL ============== -->
+<div id="detailModal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="detailTitle"></h3>
+      <button id="closeDetail" class="icon-btn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="detail-meta">
+        <span id="detailType" class="badge"></span>
+        <span id="detailDate" class="muted"></span>
+        <span id="detailTags"></span>
+      </div>
+      <pre id="detailContent" class="detail-content"></pre>
+      <h4>Associated Memories</h4>
+      <div id="detailLinks" class="detail-links"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="editFromDetail" class="btn primary">Edit</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast hidden"></div>
+
+<script src="neural-sync.js"></script>
+</body>
+</html>
