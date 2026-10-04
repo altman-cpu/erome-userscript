@@ -24,8 +24,6 @@ Women often feel a strong, magnetic attraction to men who **combine emotional sa
 - **Active listening:** Giving her your full attention without immediately trying to "fix" her problems builds instant trust.
 - **Emotional maturity:** Displaying a soft side alongside the ability to remain calm and steady makes her feel secure.
 
-*(Sources: Reddit · r/TooAfraidToAsk +2)*
-
 ## Confidence and Boundaries
 
 - **Self-mastery:** Having clear personal goals, sticking to your word, and showing emotional self-control is deeply magnetic.
