@@ -1,0 +1,272 @@
+{
+  "schemaVersion": "genesis/1",
+  "status": "draft",
+  "scope": "www.erome.com",
+  "module": {
+    "global": "GENESIS_API",
+    "alias": "window.__GENESIS",
+    "buildStep": false,
+    "license": ["Unlicense", "GPL-3.0-or-later"]
+  },
+
+  "invariants": [
+    "never throws: every call resolves to an envelope",
+    "never rejects input: unresolved input is passthrough with a warning",
+    "one envelope shape for every operation",
+    "route is reported in route.endpoint, never required from the caller",
+    "additive-only schema: unknown upstream fields are preserved, never fatal",
+    "binary payloads are referenced by handle, never embedded in the envelope"
+  ],
+
+  "input": {
+    "union": "Scalar | DOM | Transport | Structured | Passthrough | GenesisInput[]",
+    "kinds": [
+      {
+        "kind": "empty",
+        "matches": ["null", "undefined", "empty string", "NaN", "0", "false"],
+        "network": false,
+        "ok": true
+      },
+      {
+        "kind": "album",
+        "matches": ["erome url ^https?://(www\\.)?erome\\.com/a/(\\w+)", "structured {album}|{albumId}", "bare token resolved by probe"],
+        "route": "album"
+      },
+      {
+        "kind": "user",
+        "matches": ["profile url", "structured {user}|{username}", "^@?[\\w.\\-]{3,}$", "bare token resolved by probe"],
+        "route": "user"
+      },
+      {
+        "kind": "search",
+        "matches": ["url ^https?://(www\\.)?erome\\.com/search\\?(?:.*&)?q=…", "plain text containing whitespace", "^#(?<tag>.+)$"],
+        "route": "search"
+      },
+      { "kind": "explore", "matches": ["/explore"], "route": "explore" },
+      { "kind": "feed", "matches": ["erome root /"], "route": "feed" },
+      {
+        "kind": "media",
+        "matches": ["https://v\\d+\\.erome\\.com/…", "https://s\\d+\\.erome\\.com/…", "video/source/img element", "structured {media}|{src}"],
+        "route": "media"
+      },
+      { "kind": "dom", "matches": ["HTMLAnchorElement", "HTMLVideoElement", "HTMLSourceElement", "HTMLImageElement", "HTMLFormElement", "Element", "Document"], "route": "reclassified" },
+      { "kind": "transport", "matches": ["Response", "XMLHttpRequest", "GM xhr response"], "route": "parse by content-type then reclassify" },
+      { "kind": "payload", "matches": ["Blob", "File", "ArrayBuffer"], "route": "payload handle, not parsed" },
+      { "kind": "batch", "matches": ["arrays", "multi-line paste", "comma lists", "{items:[…]}", "{input:…}"], "route": "fan-out" },
+      { "kind": "external", "matches": ["absolute url on a non-erome host"], "route": "none unless force:true" },
+      { "kind": "unknown", "matches": ["any object without a recognised key", "any unmatched string"], "route": "passthrough, data.raw preserved" },
+      { "kind": "producer", "matches": ["function"], "route": "call once, reclassify result" }
+    ],
+    "classification": {
+      "order": "first match wins, pure, no network",
+      "resolution": [
+        "1 function -> call",
+        "2 DOM element -> extract scalar/url -> reclassify",
+        "3 Response/XHR -> content-type parse -> reclassify",
+        "4 Blob/File/ArrayBuffer -> payload",
+        "5 Array -> batch",
+        "6 Object -> named keys | items/input -> batch | else passthrough",
+        "7 String -> url/id/tag/text grammar -> kind",
+        "8 no match -> unknown passthrough"
+      ],
+      "emits": ["input.raw", "input.classifiedAs", "input.confidence"],
+      "confidenceLevels": ["certain", "inferred", "guessed"],
+      "guessedPolicy": "always recoverable via opts.as; warning W_CLASSIFY_GUESS attached"
+    },
+    "ambiguousBareToken": {
+      "pattern": "^\\w{6,12}$",
+      "steps": ["opts.as hint", "session cache genesis:resolve:{token}", "cheap Range: bytes=0-0 probe: div.media-group or /a/ self-link => album; .album grid => user; 404/410 => unknown", "cache resolution 24h default"]
+    },
+    "hints": {
+      "as": ["album", "user", "search", "explore", "feed", "media", "raw", "auto"],
+      "page": "integer, listing pagination",
+      "order": ["hot", "new"],
+      "t": "profile tab, passed through verbatim (values unverified)",
+      "self": "boolean, run in authenticated scope",
+      "raw": "boolean, include verbatim upstream body",
+      "cache": "{ttl:ms} | false",
+      "probe": ["duration", null],
+      "signal": "AbortSignal",
+      "timeout": "ms",
+      "strict": "boolean, disables passthrough fallback",
+      "force": "boolean, allow non-erome hosts",
+      "stopOnError": "boolean, batch"
+    }
+  },
+
+  "routes": [
+    { "op": "album", "endpoint": "/a/{id}", "method": "GET", "accepts": ["album", "dom", "transport(html)", "batch"], "kindOut": "album", "verified": true, "source": "gallery-dl extractor contract" },
+    { "op": "user", "endpoint": "/{user}?t={tab}&page={n}", "method": "GET", "accepts": ["user"], "kindOut": "user", "pageSize": 36, "verified": "partial", "unverified": ["non-posts tab values"] },
+    { "op": "search", "endpoint": "/search?q={q}&o={order}&page={n}", "method": "GET", "accepts": ["search"], "kindOut": "search", "pageSize": 36, "verified": true, "notes": "o=new selects latest ordering" },
+    { "op": "explore", "endpoint": "/explore", "method": "GET", "accepts": ["explore"], "kindOut": "explore", "verified": true },
+    { "op": "feed", "endpoint": "/", "method": "GET", "accepts": ["feed"], "kindOut": "feed", "verified": true },
+    { "op": "media", "endpoint": "https://v{n}.erome.com/… | https://s{n}.erome.com/…", "method": "GET", "accepts": ["media", "dom"], "kindOut": "media", "verified": true, "notes": "Referer: https://www.erome.com/ required; optional Range duration sniff" },
+    { "op": "asset", "endpoint": "same CDN", "method": "GET", "accepts": ["media"], "kindOut": "media + payload", "verified": true, "notes": "opt-in binary via payload handle" },
+    { "op": "self.*", "endpoint": "authenticated variants of every route above", "method": "GET", "accepts": ["same + self:true"], "kindOut": "same", "verified": false, "gated": "caps().routes.self.*" },
+    { "op": "write.*", "endpoint": "upload/edit/delete/like/favourite/comment", "method": "POST|PUT|DELETE|multipart", "accepts": ["structured descriptors"], "kindOut": "ack", "verified": false, "status": "reserved-v1.1", "reason": "state-changing and unverified; shape must not be guessed" },
+    { "op": "raw", "endpoint": "any erome path or url", "method": "any", "accepts": ["anything"], "kindOut": "unknown", "verified": true, "notes": "escape hatch for endpoints not yet in this table" }
+  ],
+
+  "operations": ["version", "caps", "resolve", "get", "album", "user", "search", "explore", "feed", "media", "asset", "batch", "raw", "payload", "on", "watch"],
+
+  "envelope": {
+    "schemaVersion": "genesis/1",
+    "keys": {
+      "schemaVersion": "string",
+      "ok": "boolean — false only when errors.length >= 1",
+      "partial": "boolean — batch continued past a per-item failure",
+      "kind": ["album", "user", "search", "explore", "feed", "media", "asset", "batch", "empty", "unknown"],
+      "route": "{ op, endpoint, url, method, status }",
+      "input": "{ raw, classifiedAs, confidence, hints }",
+      "data": "object|null",
+      "items": "GenesisItem[] — always an array",
+      "page": "{ index, size, count, hasMore, cursor }",
+      "identity": "{ authenticated, username, scope }",
+      "warnings": "[{ code, message, detail }]",
+      "errors": "[{ code, message, status, retryable, route }]",
+      "cache": "{ hit, key, ageMs, ttlMs, layer }",
+      "timing": "{ startedAt, ms }",
+      "meta": "{ schemaDrift: { unmapped: [] }, retries, redactions }"
+    },
+    "rules": [
+      "items is always an array",
+      "data carries the single-object payload for object ops, else null",
+      "ok:false implies errors.length >= 1",
+      "warnings never affect ok",
+      "field order is stable for diffing"
+    ]
+  },
+
+  "item": {
+    "required": ["id", "kind", "url", "refererRequired"],
+    "kindEnum": ["video", "image", "album", "user", "unknown"],
+    "fields": {
+      "cdnUrl": "string|null",
+      "thumbUrl": "string|null",
+      "filename": "string|null",
+      "ext": "string|null",
+      "mime": "string|null",
+      "position": "integer|null — 1-based",
+      "albumId": "string|null",
+      "albumUrl": "string|null",
+      "albumTitle": "string|null",
+      "user": "string|null",
+      "tags": "string[]",
+      "views": "integer|null",
+      "likes": "integer|null",
+      "uploadTs": "epoch ms|null",
+      "durationMs": "integer|null",
+      "durationSource": ["mp4-sniff", "cdn-header", "page", "cache", null],
+      "bytes": "{ sniffed, total }|null",
+      "refererRequired": "boolean — always true on erome CDN",
+      "self": "boolean",
+      "extra": "object — unmapped upstream fields verbatim",
+      "unknownFields": "string[] — feeds meta.schemaDrift"
+    }
+  },
+
+  "batch": {
+    "aggregation": "one envelope, items in input order with inputIndex",
+    "partialFailure": "ok:true + partial:true + per-item errors",
+    "concurrency": 4,
+    "hostSerialization": "www.erome.com single-flight per url, queue per host",
+    "stopOnError": "first failure => ok:false, collected items kept"
+  },
+
+  "errors": {
+    "E_CLASSIFY": "input could not be classified and strict:true",
+    "E_ROUTE": "no route for classified kind",
+    "E_FETCH": "network/transport failure",
+    "E_HTTP_{status}": "non-2xx upstream",
+    "E_INTERSTITIAL": "Please wait a few moments / challenge page after retries",
+    "E_RATE_LIMIT": "throttled after backoff",
+    "E_AUTH_REQUIRED": "self route without a session",
+    "E_NOT_FOUND": "404/410, message from page h1",
+    "E_PARSE": "route parser failed — should be rare: drift is a warning",
+    "E_TIMEOUT": "opts.timeout exceeded",
+    "E_ABORTED": "signal aborted",
+    "E_CAPABILITY": "route gated by caps()",
+    "E_SCHEMA": "envelope violated its own contract (bug)"
+  },
+
+  "warnings": {
+    "W_UNRESOLVED": "input kept as passthrough (data.raw)",
+    "W_CLASSIFY_GUESS": "classification below 'certain'",
+    "W_SCHEMA_DRIFT": "unmapped upstream fields routed to extra/unknownFields",
+    "W_CACHE_STALE": "served stale while revalidating",
+    "W_LEGACY_CACHE": "value read from legacy $vl# key"
+  },
+
+  "transport": {
+    "preferred": "GM.xmlHttpRequest",
+    "credentials": "include (same-origin)",
+    "cdnReferer": "https://www.erome.com/",
+    "retry": { "interstitialBackoffMs": [5000, 10000, 15000], "maxAttempts": 3, "jitter": true },
+    "durationSniff": {
+      "range": "bytes=0-140",
+      "abortWhenLoadedOver": 150,
+      "marker": "\\x03.*\\xe8",
+      "read": "next 4 bytes big-endian => duration ms",
+      "cacheKey": "genesis:media:{cdnUrl}",
+      "cacheTtlMs": 2592000000,
+      "legacyKeyPrefix": "$vl#"
+    }
+  },
+
+  "identity": {
+    "scopeSwitch": "opts.self",
+    "cacheKeyTemplate": "genesis:{scope}:{route}:{id}",
+    "partitionRule": "self-scoped responses are never served to anonymous or other identities",
+    "capsShape": "{ schemaVersion, identity:{authenticated,username,scope}, routes:{…, self:{…}, write:{…}}, verified:{…}, interstitial:{seen} }"
+  },
+
+  "events": ["result", "error", "drift"],
+  "watch": { "every": "ms", "on": ["childList", "hashchange"] },
+
+  "environmentRealities": {
+    "interstitial": "<title>Please wait a few moments</title> => backoff/retry",
+    "rateLimit": "single-flight per url + per-host queue + jitter",
+    "cdn403": "missing Referer",
+    "removedAlbum": "HTTP 410 with message in h1",
+    "rotatingCdnHosts": "opaque, re-derived from page html, never used as identity",
+    "selectorDrift": "per-route parsers, drift is W_SCHEMA_DRIFT not a throw"
+  },
+
+  "verification": {
+    "status": "not yet run — awaiting user-run probes",
+    "probeSheet": "docs/PROBES.md (read-only, runs today with plain fetch/curl)",
+    "probeSheetGroundRules": [
+      "read-only GETs only; no writes, likes or uploads",
+      "run in the user's own browser, logged in, on erome.com",
+      "record structure only (status, counts, param names) — never page content or usernames",
+      "CDN byte probes run via curl in a terminal because the page console is CORS-blocked"
+    ],
+    "sandboxLimitation": "erome.com unreachable from the build sandbox (TLS blocked); no logged-in session available",
+    "checks": [
+      { "id": "V1", "call": "__GENESIS.resolve('aBcD1234')", "expects": "probe-based album/user resolution" },
+      { "id": "V2", "call": "__GENESIS.caps()", "expects": "identity + route availability" },
+      { "id": "V3", "call": "__GENESIS.album(location.href, { self: true })", "expects": "self-scope album route" },
+      { "id": "V4", "call": "__GENESIS.user('<me>', { t: '<tab>' })", "expects": "real profile tab values enumerated" },
+      { "id": "V5", "call": "__GENESIS.search('tag', { order: 'new', page: 2 })", "expects": "o=new + pagination" },
+      { "id": "V6", "call": "__GENESIS.media(document.querySelector('video source'), { probe: 'duration' })", "expects": "durationMs via mp4 sniff" },
+      { "id": "V7", "call": "__GENESIS.asset('<cdnUrl>')", "expects": "403 without Referer vs 200 with, recorded" },
+      { "id": "V8", "call": "__GENESIS.raw('/<path>')", "expects": "verbatim response captured for any new endpoint" }
+    ]
+  },
+
+  "migrationFromCurrentUserscript": [
+    { "today": "GM.xmlHttpRequest Range bytes=0-140 + onprogress abort in videoLength()", "after": "GENESIS_API.media(url, { probe: 'duration' })" },
+    { "today": "localStorage '$vl#'+url", "after": "genesis:media:{url} cache, $vl# readable as legacy" },
+    { "today": "/\\x03.*\\xe8/ byte math", "after": "media route parser" },
+    { "today": "document.querySelectorAll('.player video source') loop", "after": "GENESIS_API.batch(sources)" },
+    { "today": "hardcoded .video / .album / .album-videos / .media-group selectors", "after": "route parsers (markup) vs UI (slider, navbar)" },
+    { "today": "location.hash onlyvideos=n", "after": "unchanged — UI concern" }
+  ],
+
+  "openQuestions": [
+    "implement now or after running the verification pass",
+    "does 'for me as well' include account listings only, or writes too",
+    "in-userscript object vs separate genesis-api.user.js dependency",
+    "always-on passthrough vs strict mode gate"
+  ]
+}
