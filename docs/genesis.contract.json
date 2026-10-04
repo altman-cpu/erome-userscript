@@ -233,7 +233,14 @@
   },
 
   "verification": {
-    "status": "not yet run — requires a browser session with erome.com reachable",
+    "status": "not yet run — awaiting user-run probes",
+    "probeSheet": "docs/PROBES.md (read-only, runs today with plain fetch/curl)",
+    "probeSheetGroundRules": [
+      "read-only GETs only; no writes, likes or uploads",
+      "run in the user's own browser, logged in, on erome.com",
+      "record structure only (status, counts, param names) — never page content or usernames",
+      "CDN byte probes run via curl in a terminal because the page console is CORS-blocked"
+    ],
     "sandboxLimitation": "erome.com unreachable from the build sandbox (TLS blocked); no logged-in session available",
     "checks": [
       { "id": "V1", "call": "__GENESIS.resolve('aBcD1234')", "expects": "probe-based album/user resolution" },

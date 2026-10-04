@@ -345,6 +345,9 @@ Nothing in this table is done yet; this commit is the contract only.
 ## 10. Verification checklist (to run in a browser on erome.com, logged in)
 
 Each line is *unverified in this repo* until checked; endpoints marked ⚠ in §4 depend on these.
+The `__GENESIS.*` calls below describe the *post-implementation* shape. To produce the same answers
+**today**, before any code exists, run the read-only sheet in [`PROBES.md`](PROBES.md)
+(plain `fetch`/`curl`, no writes, nothing automated).
 
 ```js
 __GENESIS.resolve('aBcD1234')                      // 3.4 probe correctness
