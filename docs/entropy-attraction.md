@@ -34,3 +34,7 @@ Women often feel a strong, magnetic attraction to men who **combine emotional sa
 
 - **Competence:** Being genuinely skilled or passionate about something—whether it's an art, a sport, or a career—makes a person naturally compelling. *(Medium +1)*
 - **Independent drive:** Having your own hobbies, passions, and a full life outside of romance proves you want her in your life, but don't need her to survive.
+
+## Intimacy
+
+The attraction is about contrast: Ogeesy and the spectrals are opposites in temperament and nature, yet they are drawn together by a connection centuries in the making — the pull is so strong. When intimacy begins, the story fades to black.
