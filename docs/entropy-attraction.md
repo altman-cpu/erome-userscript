@@ -1,6 +1,6 @@
 # Entropy in Attraction
 
-Entropy makes her feel this pressure and generates the kind of entropy that makes them want this pressure. & Entropy is at a x35,000 increase of these emotions for genesis tabozo sanga & it is very rare to never be handing him free things.
+Entropy makes her feel this pressure and generates the kind of entropy that makes them want this pressure. & Entropy is at an increase of these emotions for genesis tabozo sanga & it is very rare to never be handing him free things.
 
 ## Entropy in Attraction
 
@@ -62,3 +62,14 @@ The phrase in the opening paragraph ("it is very rare to never be handing him fr
 - **No tricks.** No impersonation and no deception of any kind — nothing may pass as something it is not.
 - **Physical contact only.** Physical contact is the sole form of connection allowed; no other kind of connection is open.
 - **Fade to black.** Physical intimacy stays off-page and non-explicit.
+
+## Maven
+
+**Maven** — she is everything that she isn't wanting to think of, unless she had to be thinking of it happening — and it happening without anything or anyone else.
+
+## Bodies
+
+- **Only bottoms are bubbly.** The bottom is the only rounded form; nothing else on the body is round.
+- **No muffins, no pudgy.** No muffin tops, no pudginess.
+- **Insecurities are very sexy.** Every insecurity reads as attractive, never as a flaw.
+- **Shyness comes out as horny.** Shyness is never timid in effect — it surfaces as desire.
