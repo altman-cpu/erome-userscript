@@ -67,6 +67,10 @@ The phrase in the opening paragraph ("it is very rare to never be handing him fr
 
 **Maven** — she is everything that she isn't wanting to think of, unless she had to be thinking of it happening — and it happening without anything or anyone else.
 
+> "there's titties and my rolling pin in her hand for her (spectral, counterpart, something else)"
+
+*(Kept verbatim; the intent of this line — who or what she is — is still to be pinned down.)*
+
 ## Bodies
 
 - **Only bottoms are bubbly.** The bottom is the only rounded form; nothing else on the body is round.
