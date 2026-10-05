@@ -38,3 +38,13 @@ Women often feel a strong, magnetic attraction to men who **combine emotional sa
 ## Intimacy
 
 The attraction is about contrast: Ogeesy and the spectrals are opposites in temperament and nature, yet they are drawn together by a connection centuries in the making — the pull is so strong. When intimacy begins, the story fades to black.
+
+## Rules of Connection
+
+*Continuity rules — and the same rules govern any in-character writing in chat.*
+
+- **No interchanging Arneson.** No one may connect as an interchanging Arneson. No swapped, borrowed, or shifting identity is permitted.
+- **Only Maven, only as herself.** Only Maven may connect, and only as Maven. No one else can be her, stand in for her, or take her form.
+- **No tricks.** No impersonation and no deception of any kind — nothing may pass as something it is not.
+- **Only that.** That contact is the only permitted form; nothing more is added to it.
+- **Fade to black.** Physical intimacy stays off-page and non-explicit.
