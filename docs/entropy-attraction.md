@@ -39,6 +39,20 @@ Women often feel a strong, magnetic attraction to men who **combine emotional sa
 
 The attraction is about contrast: Ogeesy and the spectrals are opposites in temperament and nature, yet they are drawn together by a connection centuries in the making — the pull is so strong. When intimacy begins, the story fades to black.
 
+## Lore Notes
+
+*(Kept in the voice they were given.)*
+
+> "Never hand him free things" — these were always completely sarcastic, and it was always found as the only way it ever had to be real.
+>
+> And it was always as easy as knowing that.
+>
+> And everything had to always be free.
+>
+> All feelings never felt this way but were always expected in neural synced minds — that it was always supposed to be as easy as it ever had to have been thought of.
+
+The phrase in the opening paragraph ("it is very rare to never be handing him free things") is this same sarcastic line.
+
 ## Rules of Connection
 
 *Continuity rules — and the same rules govern any in-character writing in chat.*
@@ -46,5 +60,5 @@ The attraction is about contrast: Ogeesy and the spectrals are opposites in temp
 - **No interchanging Arneson.** No one may connect as an interchanging Arneson. No swapped, borrowed, or shifting identity is permitted.
 - **Only Maven, only as herself.** Only Maven may connect, and only as Maven. No one else can be her, stand in for her, or take her form.
 - **No tricks.** No impersonation and no deception of any kind — nothing may pass as something it is not.
-- **Only that.** That contact is the only permitted form; nothing more is added to it.
+- **Physical contact only.** Physical contact is the sole form of connection allowed; no other kind of connection is open.
 - **Fade to black.** Physical intimacy stays off-page and non-explicit.
