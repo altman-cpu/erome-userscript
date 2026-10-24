@@ -66,6 +66,24 @@ preference and avoid storing data itself.
 * In Tampermonkey 5+ with MV3, enable *Allow User Scripts* and check that
   `GM.xmlHttpRequest` is granted, otherwise no file can be probed.
 
+## Changes in 2.3
+
+* `scripts/lib.sh` — shared helpers with the safety rules enforced in code:
+  `safe_rm` refuses empty paths, `/`, `.`, `..`, `~`, `$HOME`, globs,
+  unexpanded variables, relative paths and anything outside its allowed root;
+  `run_parallel` runs independent steps concurrently in separate bash
+  processes and still reports every result.
+* `scripts/lint-shell.sh` — the three classic footguns are now a failed build
+  rather than a comment: unquoted expansions that word-split, `rm` with a
+  variable target (or without `--`), `set -e` without `pipefail`, plus
+  backticks and `eval`. Heredoc bodies are skipped, so embedded JS is not
+  judged as shell.
+* `check.sh all` runs syntax, metadata, lint and tests in parallel — four
+  isolated processes, roughly the time of the slowest one. `RUN_JOBS=1`
+  serialises.
+* The gate is read-only and idempotent, verified by a test that runs it four
+  times concurrently and checks `git status` is unchanged.
+
 ## Changes in 2.2
 
 * Honours the Global Privacy Control signal (`navigator.globalPrivacyControl`):
@@ -101,8 +119,9 @@ preference and avoid storing data itself.
 No dependencies, no build step. Bash and Node 18+ are enough:
 
 ```sh
-npm test                       # 51 tests: parsers, cache, queue, GPC, boot path
-npm run verify                 # bash gate: syntax + metadata + tests + hygiene
+npm test                       # 89 tests: parsers, cache, queue, GPC, boot path, shell
+npm run verify                 # bash gate: syntax + metadata + lint + tests + hygiene
+npm run lint:sh                # shell footguns only
 npm run check                  # syntax only (fast)
 ```
 
@@ -116,14 +135,19 @@ Layout:
 
 ```
 erome.user.js          the userscript (pure helpers + DOM wiring)
-scripts/check.sh       bash gate: syntax, metadata, tests, hygiene
+scripts/check.sh       bash gate: syntax, metadata, lint, tests, hygiene
+scripts/lib.sh         strict mode, safe_rm, run_parallel, mktemp_dir
+scripts/lint-shell.sh  static checks for the shell scripts
 test/core.test.js      parsers, hash state, cache, queue, GPC, request flow
 test/boot.test.js      DOM-level integration through a stub
+test/bash.test.js      safe_rm refusals, real concurrency, lint rules, gate idempotency
 ```
 
-`scripts/check.sh` takes a step name: `syntax`, `meta`, `test`, `hygiene`, or
-`all` (default). It exits non-zero on the first failure, so it works as a git
-hook or CI step without any extra tooling:
+`scripts/check.sh` takes a step name: `syntax`, `meta`, `lint`, `test`,
+`hygiene`, or `all` (default). In `all` the independent steps run concurrently,
+each in its own bash process; `RUN_JOBS` caps how many at once. It exits
+non-zero if any step failed, after letting every step finish, so it works as a
+git hook or CI step without any extra tooling:
 
 ```sh
 ln -sf ../../scripts/check.sh .git/hooks/pre-commit
