@@ -434,3 +434,131 @@ test('a WebM header that is truncated in the first window is retried wider', asy
   assert.equal(calls[1].headers.Range, `bytes=0-${2 * 1024 * 1024 - 1}`);
   delete globalThis.GM;
 });
+
+/* ------------------------------------------------------------------ *
+ * Probe queue and sweep pacing
+ * ------------------------------------------------------------------ */
+
+test('queue caps probes in flight and drains everything', async () => {
+  const queue = api.createTaskQueue({ concurrency: 2, maxAttempts: 1, sleep: () => Promise.resolve() });
+  let active = 0;
+  let peak = 0;
+  for (let i = 0; i < 6; i += 1) {
+    assert.equal(queue.push({
+      key: `k${i}`,
+      async run() {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        active -= 1;
+        return i;
+      },
+    }), true);
+  }
+  await queue.whenIdle();
+  assert.equal(peak, 2);
+  assert.deepEqual(queue.stats(), { loaded: 6, failed: 0, running: 0, pending: 0 });
+});
+
+test('queue retries transient failures with capped backoff', async () => {
+  const delays = [];
+  let attempts = 0;
+  const queue = api.createTaskQueue({
+    concurrency: 1,
+    maxAttempts: 3,
+    baseDelay: 100,
+    maxDelay: 1000,
+    random: () => 0.5,
+    sleep: (ms) => {
+      delays.push(ms);
+      return Promise.resolve();
+    },
+  });
+  queue.push({
+    key: 'a',
+    async run() {
+      attempts += 1;
+      if (attempts < 3) {
+        throw api.probeError('boom', true);
+      }
+      return 42;
+    },
+  });
+  await queue.whenIdle();
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [75, 150]);
+  assert.equal(queue.stats().loaded, 1);
+  assert.equal(queue.stats().failed, 0);
+});
+
+test('queue fails fast on non-retryable errors and gives up after max attempts', async () => {
+  const queue = api.createTaskQueue({
+    concurrency: 1,
+    maxAttempts: 3,
+    sleep: () => Promise.resolve(),
+    random: () => 1,
+  });
+  let fatalAttempts = 0;
+  queue.push({
+    key: 'fatal',
+    async run() {
+      fatalAttempts += 1;
+      throw api.probeError('gone', false);
+    },
+  });
+  await queue.whenIdle();
+  assert.equal(fatalAttempts, 1);
+
+  let flakyAttempts = 0;
+  queue.push({
+    key: 'flaky',
+    async run() {
+      flakyAttempts += 1;
+      throw api.probeError('flaky', true);
+    },
+  });
+  await queue.whenIdle();
+  assert.equal(flakyAttempts, 3);
+  assert.equal(queue.stats().failed, 2);
+});
+
+test('queue ignores a duplicate key while it is in flight', async () => {
+  const queue = api.createTaskQueue({ concurrency: 1, sleep: () => Promise.resolve() });
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  assert.equal(queue.push({ key: 'same', run: () => gate }), true);
+  assert.equal(queue.push({ key: 'same', run: async () => 1 }), false);
+  release(5);
+  await queue.whenIdle();
+  assert.equal(queue.stats().loaded, 1);
+});
+
+test('nextSweepDelay backs off to the ceiling and snaps back on new content', () => {
+  assert.equal(api.nextSweepDelay(4000, true), 4000);
+  assert.equal(api.nextSweepDelay(4000, false), 8000);
+  assert.equal(api.nextSweepDelay(32000, false), 60000);
+  assert.equal(api.nextSweepDelay(60000, false), 60000);
+  assert.equal(api.nextSweepDelay(0, false), 4000);
+});
+
+test('resolveDuration surfaces fatal failures for the queue', async () => {
+  const store = api.createStore(fakeStorage());
+  installGm((options) => options.onload({ status: 404, response: new ArrayBuffer(0) }));
+  await assert.rejects(
+    () => api.resolveDuration('https://cdn.example/missing.webm', store, null, { throwOnFailure: true }),
+    (error) => error.retryable === false && /404/.test(error.message),
+  );
+  delete globalThis.GM;
+});
+
+test('a file without a readable duration is reported as retryable', async () => {
+  const store = api.createStore(fakeStorage());
+  installGm((options) => options.onload(bytesResponse(new Uint8Array(64))));
+  await assert.rejects(
+    () => api.resolveDuration('https://cdn.example/odd.bin', store, null, { throwOnFailure: true }),
+    (error) => error.retryable === true && error.message === 'duration not found',
+  );
+  delete globalThis.GM;
+});
