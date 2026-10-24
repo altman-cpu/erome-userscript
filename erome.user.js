@@ -2,7 +2,7 @@
 // @name         erome.com video length
 // @namespace    https://github.com/drdre1/
 // @icon         https://www.erome.com/favicon.ico
-// @version      2.1.0
+// @version      2.2.0
 // @description  Duration of video on erome.com, with duration filtering and a videos-only album mode
 // @author       drdre1
 // @match        https://www.erome.com/*
@@ -347,6 +347,15 @@
 
   function buildHash(count) {
     return count > 0 ? `#onlyvideos=${count}` : '';
+  }
+
+  /**
+   * Global Privacy Control is a real, machine-readable signal: browsers expose it
+   * as `navigator.globalPrivacyControl`. When it is set we do not get to opt out
+   * of it, so caching is forced off for that page load.
+   */
+  function detectGpc(navigatorLike) {
+    return Boolean(navigatorLike && navigatorLike.globalPrivacyControl === true);
   }
 
   function probeError(message, retryable) {
@@ -825,11 +834,15 @@
 
     const store = createStore(storage);
     const saved = store.getConfig() || {};
+    const gpc = detectGpc(window.navigator);
 
     const state = {
       minSeconds: Number(saved.minSeconds) || 0,
       onlyVideos: 0,
-      privateMode: Boolean(saved.privateMode),
+      gpc,
+      // A GPC signal wins over the stored preference: the user asked, the browser
+      // answered, and this page does not get to cache media details.
+      privateMode: Boolean(saved.privateMode) || gpc,
       persist() {
         // Preferences are harmless to keep; private mode only governs the
         // media-derived duration cache.
@@ -878,6 +891,9 @@
       }
       const { pending, running, failed } = queue.stats();
       const parts = [`${durations.size} loaded`];
+      if (state.gpc) {
+        parts.push('GPC');
+      }
       if (pending + running > 0) {
         parts.push(`${pending + running} loading`);
       }
@@ -1244,6 +1260,12 @@
     if (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function') {
       try {
         GM.registerMenuCommand('Private mode (GPC headers, nothing cached)', () => {
+          if (state.gpc) {
+            // The signal is authoritative; refuse to turn caching back on.
+            state.privateMode = true;
+            console.info('[erome-vl] Global Privacy Control is set: caching stays off.');
+            return;
+          }
           state.privateMode = !state.privateMode;
           if (state.privateMode) {
             store.clear();
@@ -1266,6 +1288,7 @@
     buildHash,
     sniffContainer,
     readVint,
+    detectGpc,
     createStore,
     createTaskQueue,
     nextSweepDelay,

@@ -562,3 +562,16 @@ test('a file without a readable duration is reported as retryable', async () => 
   );
   delete globalThis.GM;
 });
+
+/* ------------------------------------------------------------------ *
+ * Global Privacy Control
+ * ------------------------------------------------------------------ */
+
+test('detectGpc only trusts an explicit true', () => {
+  assert.equal(api.detectGpc({ globalPrivacyControl: true }), true);
+  assert.equal(api.detectGpc({ globalPrivacyControl: false }), false);
+  assert.equal(api.detectGpc({ globalPrivacyControl: 'true' }), false);
+  assert.equal(api.detectGpc({}), false);
+  assert.equal(api.detectGpc(null), false);
+  assert.equal(api.detectGpc(undefined), false);
+});

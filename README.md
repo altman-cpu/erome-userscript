@@ -42,12 +42,16 @@ to videos only.
 This script adds no third-party requests and sends nothing anywhere. Two options
 exist for people who want less local state:
 
-* The `Sec-GPC: 1` and `DNT: 1` headers are attached to every media probe in
-  private mode, signalling Global Privacy Control to the origin server.
+* **Global Privacy Control is honoured, not just offered.** If the browser reports
+  the signal (`navigator.globalPrivacyControl === true`), caching is forced off for
+  that page load, `Sec-GPC: 1` and `DNT: 1` go out on every probe, the panel shows
+  `GPC`, and the private-mode menu entry refuses to turn caching back on. Existing
+  cache entries are left untouched — they are simply not read.
 * **Private mode** (userscript menu → *Private mode*) stops writing durations to
   storage and clears what is already cached, so nothing media-derived is kept
   between visits. Filter preferences are still remembered; they contain no
-  information about the files you viewed.
+  information about the files you viewed. A GPC signal takes precedence over this
+  menu entry.
 
 Note that a page script cannot change what other parties do; it can only state a
 preference and avoid storing data itself.
@@ -61,6 +65,14 @@ preference and avoid storing data itself.
 * Private browsing or blocked storage degrades to an in-memory cache.
 * In Tampermonkey 5+ with MV3, enable *Allow User Scripts* and check that
   `GM.xmlHttpRequest` is granted, otherwise no file can be probed.
+
+## Changes in 2.2
+
+* Honours the Global Privacy Control signal (`navigator.globalPrivacyControl`):
+  forced no-cache, GPC headers on every probe, a `GPC` marker in the panel, and a
+  menu entry that refuses to override it.
+* `scripts/check.sh` — one bash entry point for syntax, metadata, tests and repo
+  hygiene, usable as a pre-commit or CI gate (`npm run verify`).
 
 ## Changes in 2.1
 
@@ -86,11 +98,12 @@ preference and avoid storing data itself.
 
 ## Development
 
-No dependencies, no build step. Node 18+ is enough for the test suite:
+No dependencies, no build step. Bash and Node 18+ are enough:
 
 ```sh
-npm test                       # 48 tests: parsers, cache, queue, network flow, boot path
-npm run check                  # syntax check for the script and tests
+npm test                       # 51 tests: parsers, cache, queue, GPC, boot path
+npm run verify                 # bash gate: syntax + metadata + tests + hygiene
+npm run check                  # syntax only (fast)
 ```
 
 Tests build real WebM and MP4 byte fixtures, so the parsers are exercised against
@@ -103,8 +116,17 @@ Layout:
 
 ```
 erome.user.js          the userscript (pure helpers + DOM wiring)
-test/core.test.js      parsers, hash state, cache, queue, GM request flow
+scripts/check.sh       bash gate: syntax, metadata, tests, hygiene
+test/core.test.js      parsers, hash state, cache, queue, GPC, request flow
 test/boot.test.js      DOM-level integration through a stub
+```
+
+`scripts/check.sh` takes a step name: `syntax`, `meta`, `test`, `hygiene`, or
+`all` (default). It exits non-zero on the first failure, so it works as a git
+hook or CI step without any extra tooling:
+
+```sh
+ln -sf ../../scripts/check.sh .git/hooks/pre-commit
 ```
 
 ## License

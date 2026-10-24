@@ -290,6 +290,18 @@ const fakeSetTimeout = (fn, ms) => {
   return 1;
 };
 
+function makeWindow(document, storage, extra) {
+  return Object.assign({
+    localStorage: storage,
+    location: document.location,
+    requestAnimationFrame: (fn) => fn(),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
+    addEventListener() {},
+    navigator: {},
+  }, extra || {});
+}
+
 function loadUserscript(document, window) {
   globalThis.document = document;
   globalThis.window = window;
@@ -577,3 +589,59 @@ function albumsAreVisible(document) {
     assert.equal(album.classList.contains('erome-vl-hidden'), false);
   });
 }
+
+test('a Global Privacy Control signal forces private mode and cannot be toggled off', async () => {
+  const document = createDocument();
+  buildPage(document);
+  const storage = seededStorage(); // has cached durations from an earlier visit
+  let menuCallback = null;
+  const requests = [];
+  globalThis.GM = {
+    registerMenuCommand(label, callback) {
+      menuCallback = callback;
+    },
+    xmlHttpRequest(options) {
+      requests.push(options);
+      options.onload({ status: 304, response: new ArrayBuffer(0) });
+      return { abort() {} };
+    },
+  };
+
+  const window = makeWindow(document, storage, { navigator: { globalPrivacyControl: true } });
+
+  loadUserscript(document, window);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  const status = document.getElementById('erome-vl-status').textContent;
+  assert.match(status, /GPC/, 'the panel reports the signal');
+
+  menuCallback();
+  assert.equal(
+    JSON.parse(storage.getItem('$vl2#~config')).v.privateMode,
+    true,
+    'the menu cannot turn caching back on while GPC is set',
+  );
+
+  // Cached entries must not be read, so a probe is attempted with the signal attached.
+  assert.ok(requests.length > 0, 'expected probes despite the warm cache');
+  assert.equal(requests[0].headers['Sec-GPC'], '1');
+
+  assert.equal(
+    storage.getItem('$vl2#https://cdn.example/video-0.webm') !== null,
+    true,
+    'existing cache is left intact, just unused',
+  );
+  delete globalThis.GM;
+});
+
+test('without a GPC signal the stored preference still applies', async () => {
+  const document = createDocument();
+  buildPage(document);
+  const storage = seededStorage(DURATIONS, { minSeconds: 0, privateMode: false });
+  const window = makeWindow(document, storage);
+
+  loadUserscript(document, window);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.doesNotMatch(document.getElementById('erome-vl-status').textContent, /GPC/);
+});
