@@ -2,7 +2,7 @@
 // @name         erome.com video length
 // @namespace    https://github.com/drdre1/
 // @icon         https://www.erome.com/favicon.ico
-// @version      2.0.0
+// @version      2.1.0
 // @description  Duration of video on erome.com, with duration filtering and a videos-only album mode
 // @author       drdre1
 // @match        https://www.erome.com/*
@@ -349,6 +349,127 @@
     return count > 0 ? `#onlyvideos=${count}` : '';
   }
 
+  function probeError(message, retryable) {
+    const error = new Error(message);
+    error.retryable = Boolean(retryable);
+    return error;
+  }
+
+  /**
+   * Grows the delay between sweeps while nothing new appears and snaps back to
+   * the base as soon as a sweep finds something, so a page that never changes
+   * costs almost nothing.
+   */
+  function nextSweepDelay(previousDelay, foundNew, base = 4000, max = 60000) {
+    if (foundNew) {
+      return base;
+    }
+    if (!Number.isFinite(previousDelay) || previousDelay <= 0) {
+      return base;
+    }
+    return Math.min(max, Math.max(base, previousDelay * 2));
+  }
+
+  /**
+   * Runs probe tasks with a fixed number of slots in flight, retrying transient
+   * failures with capped exponential backoff. Non-retryable errors fail at once.
+   */
+  function createTaskQueue(options = {}) {
+    const concurrency = Math.max(1, options.concurrency || 3);
+    const maxAttempts = Math.max(1, options.maxAttempts || 3);
+    const baseDelay = options.baseDelay === undefined ? 750 : options.baseDelay;
+    const maxDelay = options.maxDelay === undefined ? 8000 : options.maxDelay;
+    const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const random = options.random || Math.random;
+
+    const waiting = [];
+    const activeKeys = new Set();
+    const counts = { loaded: 0, failed: 0, running: 0 };
+    let stopped = false;
+
+    function backoff(attempt) {
+      const raw = Math.min(maxDelay, baseDelay * Math.pow(2, attempt - 1));
+      return Math.round(raw * (0.5 + random() * 0.5));
+    }
+
+    function pump() {
+      while (!stopped && counts.running < concurrency && waiting.length > 0) {
+        counts.running += 1;
+        execute(waiting.shift());
+      }
+    }
+
+    async function execute(task) {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          const value = await task.run();
+          counts.running -= 1;
+          counts.loaded += 1;
+          if (task.key) {
+            activeKeys.delete(task.key);
+          }
+          if (typeof task.onSuccess === 'function') {
+            task.onSuccess(value);
+          }
+          pump();
+          return;
+        } catch (error) {
+          const fatal = error && error.retryable === false;
+          if (fatal || attempt >= maxAttempts || stopped) {
+            counts.running -= 1;
+            counts.failed += 1;
+            if (task.key) {
+              activeKeys.delete(task.key);
+            }
+            if (typeof task.onFailure === 'function') {
+              task.onFailure(error, attempt);
+            }
+            pump();
+            return;
+          }
+          await sleep(backoff(attempt));
+        }
+      }
+    }
+
+    return {
+      push(task) {
+        if (!task || stopped) {
+          return false;
+        }
+        if (task.key && activeKeys.has(task.key)) {
+          return false;
+        }
+        if (task.key) {
+          activeKeys.add(task.key);
+        }
+        waiting.push(task);
+        pump();
+        return true;
+      },
+      stop() {
+        stopped = true;
+        waiting.length = 0;
+        activeKeys.clear();
+      },
+      stats() {
+        return { loaded: counts.loaded, failed: counts.failed, running: counts.running, pending: waiting.length };
+      },
+      whenIdle() {
+        return new Promise((resolve) => {
+          const poll = () => {
+            if (counts.running === 0 && waiting.length === 0) {
+              resolve();
+            } else {
+              setTimeout(poll, 1);
+            }
+          };
+          poll();
+        });
+      },
+    };
+  }
+
   /* ------------------------------------------------------------------ *
    * Persistence (defensive about private mode, quota and corrupt entries)
    * ------------------------------------------------------------------ */
@@ -523,7 +644,7 @@
   function requestBytes(url, range, extraHeaders) {
     return new Promise((resolve, reject) => {
       if (typeof GM === 'undefined' || typeof GM.xmlHttpRequest !== 'function') {
-        reject(new Error('GM.xmlHttpRequest unavailable'));
+        reject(probeError('GM.xmlHttpRequest unavailable', false));
         return;
       }
       let settled = false;
@@ -581,13 +702,15 @@
           },
           onload(response) {
             if (response && typeof response.status === 'number' && response.status >= 400) {
-              finish(new Error(`HTTP ${response.status}`));
+              // 403/404 will not improve on a retry; throttling and timeouts might.
+              const retryable = response.status === 408 || response.status === 429;
+              finish(probeError(`HTTP ${response.status}`, retryable));
               return;
             }
             const body = response ? response.response : null;
             if (body instanceof ArrayBuffer) {
               if (body.byteLength > MAX_RESPONSE_BYTES) {
-                finish(new Error('response too large'));
+                finish(probeError('response too large', false));
                 return;
               }
               finish(null, new Uint8Array(body));
@@ -619,11 +742,12 @@
    * Resolves a video's duration: cache first, then the first bytes of the file,
    * then (MP4 only) the tail, where `moov` is commonly stored.
    */
-  async function resolveDuration(url, store, extraHeaders) {
+  async function resolveDuration(url, store, extraHeaders, options = {}) {
     const cached = store.getDuration(url);
     if (cached !== null && cached !== undefined) {
       return cached;
     }
+    const shouldThrow = Boolean(options.throwOnFailure);
     let duration = null;
     try {
       const head = await requestBytes(url, `bytes=0-${MAX_HEAD_BYTES}`, extraHeaders);
@@ -639,12 +763,21 @@
         duration = parseEbmlDuration(wider);
       }
     } catch (error) {
-      // A failed probe must never break the page; the UI just stays quiet.
+      // A failed probe must never break the page; the UI just stays quiet
+      // unless the caller asked for the failure so it can be retried.
+      if (shouldThrow) {
+        throw error;
+      }
       return null;
     }
     if (duration !== null && duration > 0) {
       store.setDuration(url, duration);
       return duration;
+    }
+    if (shouldThrow) {
+      // A head that parsed but carried no duration may be a truncation, so it is
+      // worth one bounded retry.
+      throw probeError('duration not found', true);
     }
     return null;
   }
@@ -725,7 +858,34 @@
     };
 
     const durations = new Map(); // url -> milliseconds
+    const pendingTargets = new Map(); // url -> [{ anchor, video }]
     const isAlbum = document.location.pathname.startsWith('/a/');
+
+    // Three probes in flight: enough to fill a page quickly, small enough that a
+    // long album does not exhaust the connection budget.
+    const queue = createTaskQueue({
+      concurrency: 3,
+      maxAttempts: 3,
+      baseDelay: 750,
+      maxDelay: 8000,
+      sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+    });
+
+    function refreshStatus() {
+      const status = document.getElementById('erome-vl-status');
+      if (!status) {
+        return;
+      }
+      const { pending, running, failed } = queue.stats();
+      const parts = [`${durations.size} loaded`];
+      if (pending + running > 0) {
+        parts.push(`${pending + running} loading`);
+      }
+      if (failed > 0) {
+        parts.push(`${failed} unavailable`);
+      }
+      status.textContent = parts.join(' \u00b7 ');
+    }
 
     let filterActive = false;
 
@@ -782,9 +942,15 @@
           state.persist();
         });
 
+        const status = document.createElement('span');
+        status.id = 'erome-vl-status';
+        status.setAttribute('style', 'display:block;font-size:11px;opacity:.75;margin-top:2px');
+        status.textContent = 'Loading\u2026';
+
         panel.appendChild(label);
         panel.appendChild(document.createElement('br'));
         panel.appendChild(slider);
+        panel.appendChild(status);
         (document.body || document.documentElement).appendChild(panel);
       }
       filterActive = true;
@@ -792,6 +958,7 @@
       slider.value = String(Math.min(Number(slider.max), Math.max(0, state.minSeconds)));
       renderOutput();
       applyFilter();
+      refreshStatus();
     }
 
     function renderOutput() {
@@ -836,26 +1003,52 @@
       updateSliderBounds();
       renderOutput();
       applyFilter();
+      refreshStatus();
     }
 
-    async function enhance(url, anchor, video) {
+    /**
+     * Queues a probe for `url`, remembering every anchor that is waiting for it.
+     * Repeat calls for the same URL share one request instead of stacking up.
+     */
+    function enhance(url, anchor, video) {
       const known = durations.get(url);
       if (known !== undefined) {
         attachDuration(url, anchor, video, known);
         return;
       }
-      const milliseconds = await resolveDuration(url, durationStore, privacyHeaders());
-      if (milliseconds === null || milliseconds === undefined) {
-        if (anchor) {
-          anchor.dataset.eromeVlDone = '1';
-        }
+      const existing = pendingTargets.get(url);
+      if (existing) {
+        existing.push({ anchor, video });
         return;
       }
-      durations.set(url, milliseconds);
-      attachDuration(url, anchor, video, milliseconds);
+      pendingTargets.set(url, [{ anchor, video }]);
+      const queued = queue.push({
+        key: url,
+        run: () => resolveDuration(url, durationStore, privacyHeaders(), { throwOnFailure: true }),
+        onSuccess(milliseconds) {
+          const targets = pendingTargets.get(url) || [];
+          pendingTargets.delete(url);
+          durations.set(url, milliseconds);
+          targets.forEach((target) => attachDuration(url, target.anchor, target.video, milliseconds));
+          refreshStatus();
+        },
+        onFailure(error) {
+          pendingTargets.delete(url);
+          if (anchor) {
+            anchor.dataset.eromeVlDone = '1';
+          }
+          console.warn('[erome-vl] probe failed:', url, error && error.message);
+          refreshStatus();
+        },
+      });
+      if (!queued) {
+        pendingTargets.delete(url);
+      }
+      refreshStatus();
     }
 
     function collectVideos() {
+      let added = 0;
       document.querySelectorAll('.player video source, .player video').forEach((element) => {
         const source = element.tagName === 'SOURCE' ? element : element.querySelector('source') || element;
         const url = source.src || source.getAttribute('src');
@@ -876,8 +1069,10 @@
         if (player.parentNode) {
           player.parentNode.insertBefore(anchor, player);
         }
+        added += 1;
         enhance(url, anchor, source.closest('video') || element);
       });
+      return added;
     }
 
     function applyOnlyVideos() {
@@ -970,9 +1165,38 @@
       renderPanel();
     }
 
+    const SWEEP_BASE_MS = 4000;
+    const SWEEP_MAX_MS = 60000;
+    let sweepDelay = SWEEP_BASE_MS;
+    let sweepTimer = null;
+
+    function clearSweep() {
+      if (sweepTimer !== null && typeof window.clearTimeout === 'function') {
+        window.clearTimeout(sweepTimer);
+      }
+      sweepTimer = null;
+    }
+
+    /**
+     * Re-scans the page over and over: fast while new players keep appearing,
+     * backing off to a minute once the page is stable, paused while hidden.
+     */
+    function scheduleSweep(delay) {
+      clearSweep();
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      sweepDelay = delay === undefined ? sweepDelay : delay;
+      sweepTimer = window.setTimeout(() => {
+        sweepTimer = null;
+        const added = collectVideos();
+        scheduleSweep(nextSweepDelay(sweepDelay, added > 0, SWEEP_BASE_MS, SWEEP_MAX_MS));
+      }, sweepDelay);
+    }
+
     collectVideos();
     window.requestAnimationFrame(collectVideos);
-    window.setTimeout(collectVideos, 1200);
+    scheduleSweep();
 
     installNavItem();
     setOnlyVideos(parseHash(document.location.hash).onlyVideos || 0, false);
@@ -980,6 +1204,9 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         collectVideos();
+        scheduleSweep(SWEEP_BASE_MS);
+      } else {
+        clearSweep();
       }
     });
 
@@ -1002,6 +1229,7 @@
         window.setTimeout(() => {
           scheduled = false;
           collectVideos();
+          scheduleSweep(SWEEP_BASE_MS);
         }, 300);
       });
       observer.observe(document.body, { childList: true, subtree: true });
@@ -1039,6 +1267,9 @@
     sniffContainer,
     readVint,
     createStore,
+    createTaskQueue,
+    nextSweepDelay,
+    probeError,
     resolveDuration,
     requestBytes,
     MAX_HEAD_BYTES,

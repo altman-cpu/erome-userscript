@@ -23,6 +23,17 @@ to videos only.
   groups (inside albums) that contain no video. Left click raises the threshold,
   right click turns it off, and the level is stored in `#onlyvideos=N` so a link
   can carry it.
+* **Load pass** — the page is scanned again on a self-scheduling loop: every 4 s
+  while new players keep showing up, backing off to at most once a minute once it
+  is stable, and paused while the tab is hidden.
+* **Budgeted probing** — three probes run at a time through a queue with duplicate
+  collapsing, so two hundred players on one page are resolved steadily instead of
+  firing two hundred requests at once. Throttling (`429`/`408`), timeouts and
+  network errors retry up to three times with capped exponential backoff
+  (0.75 s → 8 s, jittered); `403`/`404` and oversized bodies fail immediately
+  instead of hammering a file that will not answer.
+* **Status line** — the panel shows how many durations are loaded, still loading,
+  or unavailable, so a slow file never looks like a dead script.
 * **Caching** — resolved durations are cached in `localStorage` for 30 days
   (500 entries, oldest evicted first) so revisiting a page does not re-probe files.
 
@@ -51,6 +62,15 @@ preference and avoid storing data itself.
 * In Tampermonkey 5+ with MV3, enable *Allow User Scripts* and check that
   `GM.xmlHttpRequest` is granted, otherwise no file can be probed.
 
+## Changes in 2.1
+
+* Adds the recurring load pass with adaptive pacing (4 s → 60 s, paused when the
+  tab is hidden) and a bounded retry queue (concurrency 3, three attempts,
+  jittered backoff) instead of one burst of unbounded requests.
+* Probe failures are classified: rate limits and timeouts retry, missing files do
+  not.
+* New status line in the panel; failed probes are logged once, not per frame.
+
 ## Changes in 2.0
 
 * Reads durations from container metadata (WebM/Matroska and MP4/M4V) instead of
@@ -69,12 +89,13 @@ preference and avoid storing data itself.
 No dependencies, no build step. Node 18+ is enough for the test suite:
 
 ```sh
-npm test                       # 40 tests: parsers, cache, network flow, boot path
+npm test                       # 48 tests: parsers, cache, queue, network flow, boot path
 npm run check                  # syntax check for the script and tests
 ```
 
 Tests build real WebM and MP4 byte fixtures, so the parsers are exercised against
-actual container layouts rather than mocks. `test/boot.test.js` runs the real
+actual container layouts rather than mocks, and drive the probe queue with stub
+timers to check concurrency, backoff and give-up behaviour. `test/boot.test.js` runs the real
 `boot()` against a small DOM stub to cover anchors, filtering, the slider and the
 navbar integration.
 
@@ -82,7 +103,7 @@ Layout:
 
 ```
 erome.user.js          the userscript (pure helpers + DOM wiring)
-test/core.test.js      parsers, hash state, cache, GM request flow
+test/core.test.js      parsers, hash state, cache, queue, GM request flow
 test/boot.test.js      DOM-level integration through a stub
 ```
 

@@ -281,6 +281,15 @@ function seededStorage(milliseconds = DURATIONS, config = null) {
   return fakeStorage(seed);
 }
 
+// The sweep re-arms itself; let only short timers actually run so the stub does
+// not busy-loop, and never execute the multi-second sweep.
+const fakeSetTimeout = (fn, ms) => {
+  if (!ms || ms < 1000) {
+    return setTimeout(fn, ms || 0);
+  }
+  return 1;
+};
+
 function loadUserscript(document, window) {
   globalThis.document = document;
   globalThis.window = window;
@@ -308,7 +317,8 @@ test('boot() renders anchors, durations and the filter panel', async () => {
     localStorage: storage,
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -333,6 +343,8 @@ test('boot() renders anchors, durations and the filter panel', async () => {
   assert.ok(Number(slider.max) >= 65);
   assert.equal(document.getElementById('erome-vl-output').textContent, 'Off');
 
+  assert.equal(document.getElementById('erome-vl-status').textContent, '2 loaded');
+
   const onlyVideos = nav.querySelector('a');
   assert.equal(onlyVideos.textContent, 'only videos');
 });
@@ -350,7 +362,8 @@ test('the slider hides videos shorter than the minimum and persists it', async (
     localStorage: storage,
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -377,7 +390,8 @@ test('the only-videos nav item filters album thumbnails and updates the hash', a
     localStorage: fakeStorage(),
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -412,7 +426,8 @@ test('a deep link restores the saved only-videos level', async () => {
     localStorage: fakeStorage(),
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -442,7 +457,8 @@ test('album pages hide media groups without a video', async () => {
     localStorage: fakeStorage(),
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -460,7 +476,8 @@ test('a saved minimum larger than the default range is restored, not clamped', a
     localStorage: seededStorage(DURATIONS, { minSeconds: 120 }),
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -480,7 +497,8 @@ test('single-video pages ignore a saved minimum so nothing disappears', async ()
     localStorage: seededStorage(DURATIONS, { minSeconds: 120 }),
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -509,7 +527,8 @@ test('private mode clears cached durations and survives a reload', async () => {
     localStorage: storage,
     location: document.location,
     requestAnimationFrame: (fn) => fn(),
-    setTimeout: (fn) => setTimeout(fn, 0),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
     addEventListener() {},
   };
 
@@ -530,3 +549,31 @@ test('private mode clears cached durations and survives a reload', async () => {
   assert.equal(restored.v.privateMode, false);
   delete globalThis.GM;
 });
+
+test('failed probes are reported instead of leaving the panel at Loading', async () => {
+  const document = createDocument();
+  buildPage(document);
+  delete globalThis.GM;
+  const window = {
+    localStorage: fakeStorage(),
+    location: document.location,
+    requestAnimationFrame: (fn) => fn(),
+    setTimeout: fakeSetTimeout,
+    clearTimeout: () => {},
+    addEventListener() {},
+  };
+
+  loadUserscript(document, window);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  const status = document.getElementById('erome-vl-status').textContent;
+  assert.match(status, /^0 loaded/);
+  assert.match(status, /2 unavailable/);
+  albumsAreVisible(document);
+});
+
+function albumsAreVisible(document) {
+  document.querySelectorAll('.album').forEach((album) => {
+    assert.equal(album.classList.contains('erome-vl-hidden'), false);
+  });
+}
