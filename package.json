@@ -1,0 +1,29 @@
+{
+  "name": "erome-userscript",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Angular-powered Erome video-duration userscript",
+  "scripts": {
+    "build": "ng build erome-userscript --configuration production && node scripts/build-userscript.mjs",
+    "build:site": "ng build erome-site --configuration production",
+    "build:all": "npm run build && npm run build:site",
+    "start:site": "ng serve erome-site --host 0.0.0.0 --port 4200",
+    "check": "ng build erome-userscript --configuration production"
+  },
+  "dependencies": {
+    "@angular/common": "20.3.34",
+    "@angular/compiler": "20.3.34",
+    "@angular/core": "20.3.34",
+    "@angular/platform-browser": "20.3.34",
+    "rxjs": "7.8.2",
+    "tslib": "2.8.1",
+    "zone.js": "0.15.1"
+  },
+  "devDependencies": {
+    "@angular/build": "20.3.41",
+    "@angular/cli": "20.3.41",
+    "@angular/compiler-cli": "20.3.34",
+    "esbuild": "0.25.11",
+    "typescript": "5.9.3"
+  }
+}

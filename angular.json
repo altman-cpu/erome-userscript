@@ -1,0 +1,92 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "newProjectRoot": "projects",
+  "projects": {
+    "erome-userscript": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "erome",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/angular",
+            "index": "src/index.html",
+            "browser": "src/main.ts",
+            "polyfills": ["zone.js"],
+            "tsConfig": "tsconfig.app.json",
+            "styles": ["src/styles.css"],
+            "assets": []
+          },
+          "configurations": {
+            "production": {
+              "optimization": true,
+              "outputHashing": "none",
+              "sourceMap": false,
+              "namedChunks": false
+            }
+          },
+          "defaultConfiguration": "production"
+        }
+      }
+    },
+    "erome-site": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src/site",
+      "prefix": "erome-site",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/site",
+            "index": "src/site/index.html",
+            "browser": "src/site/main.ts",
+            "polyfills": ["zone.js"],
+            "tsConfig": "tsconfig.site.json",
+            "styles": ["src/site/site.css"],
+            "assets": [
+              {
+                "glob": "erome.user.js",
+                "input": ".",
+                "output": "/"
+              }
+            ]
+          },
+          "configurations": {
+            "production": {
+              "optimization": true,
+              "outputHashing": "none",
+              "sourceMap": false,
+              "namedChunks": false
+            },
+            "development": {
+              "optimization": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "erome-site:build:production"
+            },
+            "development": {
+              "buildTarget": "erome-site:build:development"
+            }
+          },
+          "defaultConfiguration": "development",
+          "options": {
+            "host": "0.0.0.0",
+            "port": 4200,
+            "allowedHosts": true
+          }
+        }
+      }
+    }
+  }
+}

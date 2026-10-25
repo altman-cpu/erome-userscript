@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/site",
+    "types": []
+  },
+  "files": ["src/site/main.ts"],
+  "include": ["src/**/*.d.ts"]
+}
