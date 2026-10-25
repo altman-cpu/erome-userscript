@@ -1,0 +1,65 @@
+#erome-userscript-controls {
+  all: initial;
+  display: block;
+  position: fixed;
+  z-index: 2147483000;
+  top: 56px;
+  right: 12px;
+  width: min(290px, calc(100vw - 24px));
+  color: #f4f6fb;
+  font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+
+#erome-userscript-controls *,
+#erome-userscript-controls *::before,
+#erome-userscript-controls *::after { box-sizing: border-box; }
+
+#erome-userscript-controls .panel {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .17);
+  border-radius: 12px;
+  background: #151922;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .34);
+}
+
+#erome-userscript-controls .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 8px 10px 8px 14px;
+  background: #202633;
+}
+
+#erome-userscript-controls .panel-header strong { font-size: 13px; }
+#erome-userscript-controls .status { display: block; color: #b2bdcf; font-size: 11px; }
+#erome-userscript-controls button,
+#erome-userscript-controls input { font: inherit; }
+#erome-userscript-controls .collapse {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: #30394a;
+  color: inherit;
+  cursor: pointer;
+  font-size: 19px;
+}
+#erome-userscript-controls .panel-body { display: grid; gap: 7px; padding: 12px 14px 14px; }
+#erome-userscript-controls input[type="range"] { width: 100%; accent-color: #88aaff; }
+#erome-userscript-controls .range-ends { display: flex; justify-content: space-between; margin-top: -7px; color: #aab4c4; font-size: 10px; }
+#erome-userscript-controls .toggle-row { display: flex; gap: 8px; align-items: center; margin: 5px 0; }
+#erome-userscript-controls input[type="checkbox"] { accent-color: #88aaff; }
+#erome-userscript-controls input[type="number"] {
+  width: 76px;
+  padding: 5px 7px;
+  border: 1px solid #485366;
+  border-radius: 6px;
+  background: #0f131a;
+  color: inherit;
+}
+#erome-userscript-controls .hint { margin: 3px 0 0; color: #aab4c4; font-size: 10px; }
+
+.erome-video-source-link { display: block; overflow-wrap: anywhere; margin: 5px 0; font-size: 12px; }
+.erome-video-duration { display: inline-block; margin: 2px 0 5px; font-weight: 600; }
