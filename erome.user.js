@@ -2,8 +2,8 @@
 // @name         erome.com video length
 // @namespace    https://github.com/drdre1/
 // @icon         https://www.erome.com/favicon.ico
-// @version      1.1
-// @description  Duration of video on erome.com + continuous clip registration into movies
+// @version      1.2
+// @description  Duration of video on erome.com + continuous clip registration, Dogecoin HUD & Eightfold payloads
 // @author       drdre1
 // @match        https://www.erome.com/*
 // @grant        GM.xmlHttpRequest
@@ -26,11 +26,13 @@
   // copy. The brand below governs our own state, not the manager's identity.
   // ==========================================================================
   const BRAND = 'erome-clip-registry';
-  const VERSION = '1.1';
+  const VERSION = '1.2';
   const NS = BRAND + ':';        // localStorage key prefix  -> "<BRAND>:<table>#<key>"
   const ATTR = 'data-' + BRAND;  // DOM marker: "this node belongs to us"
   const CSS = BRAND;             // CSS class prefix
   const GLOBAL = 'EroClipRegistry';
+  const DEFAULT_PERSONA = 'Much4K';
+  const CURRENCY = 'USD';        // local settlement metadata slot strictly USD-only
 
   // v1.0 cached durations under this prefix. Migrated once into the registry,
   // then removed, so exactly one record per clip ever exists.
@@ -117,6 +119,24 @@
     return str(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
   }
 
+  function b64uEncode(text) {
+    const utf8 = encodeURIComponent(text).replace(/%([0-9A-F]{2})/g, function (_, hex) {
+      return String.fromCharCode(parseInt(hex, 16));
+    });
+    return window.btoa(utf8).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function b64uDecode(token) {
+    let b64 = str(token).replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const bin = window.atob(b64);
+    let pct = '';
+    for (let i = 0; i < bin.length; i++) {
+      pct += '%' + ('00' + bin.charCodeAt(i).toString(16)).slice(-2);
+    }
+    return decodeURIComponent(pct);
+  }
+
   // ==========================================================================
   // STORE
   // --------------------------------------------------------------------------
@@ -138,25 +158,30 @@
     }
 
     const memory = new Map();
+    let live = usable ? 'localStorage' : 'memory';
 
     function fullKey(table, key) {
       return NS + table + '#' + key;
     }
 
     function readRaw(k) {
+      if (memory.has(k)) return memory.get(k);
       if (usable) {
-        try { return window.localStorage.getItem(k); } catch (e) { /* fall through to memory */ }
+        try { return window.localStorage.getItem(k); } catch (e) { live = 'memory'; }
       }
-      return memory.has(k) ? memory.get(k) : null;
+      return null;
     }
 
     function writeRaw(k, v) {
       if (usable) {
         try {
           window.localStorage.setItem(k, v);
+          memory.delete(k);
+          live = 'localStorage';
           return true;
         } catch (e) {
           /* quota exceeded — keep serving this session from memory */
+          live = 'memory';
         }
       }
       memory.set(k, v);
@@ -194,6 +219,7 @@
 
     return {
       usable: usable,
+      mode: function () { return live; },
 
       get: function (table, key) {
         const full = fullKey(table, key);
@@ -356,7 +382,11 @@
   // ==========================================================================
   function resolveSrc(el) {
     if (!el) return '';
-    const raw = el.currentSrc || el.src || el.getAttribute('src') || '';
+    const attr = el.getAttribute ? el.getAttribute('src') : null;
+    // An explicit empty src="" reflects as document.baseURI on el.src per the
+    // HTML spec, which would otherwise register the album page URL as a clip.
+    if (attr !== null && str(attr) === '') return '';
+    const raw = str(attr) || str(el.currentSrc) || str(el.src);
     if (!raw) return '';
     if (/^(blob:|data:|javascript:)/i.test(raw)) return '';
     try {
@@ -461,11 +491,14 @@
   }
 
   function mediaIndex(videoEl) {
-    const group = videoEl && videoEl.closest ? videoEl.closest('.media-group') : null;
-    if (!group) return null;
-    const items = group.querySelectorAll('.video, .img');
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].contains(videoEl)) return i;
+    if (!videoEl || !videoEl.closest) return null;
+    const group = videoEl.closest('.media-group');
+    const scope = videoEl.closest('.album') || (group && group.parentNode) || group;
+    if (!scope || !scope.querySelectorAll) return null;
+    const items = scope.querySelectorAll('.media-group .video, .media-group .img');
+    const list = items.length ? items : (group ? group.querySelectorAll('.video, .img') : []);
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].contains(videoEl)) return i;
     }
     return null;
   }
@@ -533,6 +566,7 @@
     Store.set('clips', rec.id, rec);
     if (rec.albumId) touchMovie(rec);
     if (rec.username) touchUser(rec);
+    refreshHud();
     return rec;
   }
 
@@ -625,22 +659,220 @@
   }
 
   // ==========================================================================
-  // DECORATION — duration label + 4K badge
+  // DOGECOIN PERSONALIZATION + USD SETTLEMENT METADATA + EIGHTFOLD CODEC
+  // --------------------------------------------------------------------------
+  // - Dogecoin personalized badge/theme (no live payment transfers).
+  // - Local settlement schema slot strictly enforces USD ("USD ONLY").
+  // - Deterministic 8-fold ("eightfold") canonical envelope with djb2 checksum.
+  // ==========================================================================
+  function getPersona() {
+    const raw = Store.meta('personaTag');
+    const tag = str(raw) || DEFAULT_PERSONA;
+    return {
+      symbol: '\u00D0',
+      theme: 'dogecoin-gold',
+      tag: tag
+    };
+  }
+
+  function setPersona(nextTag) {
+    const clean = str(String(nextTag === undefined || nextTag === null ? '' : nextTag))
+      .replace(/[\r\n\t]+/g, ' ')
+      .slice(0, 32) || DEFAULT_PERSONA;
+    Store.meta('personaTag', clean);
+    document.querySelectorAll('[' + ATTR + '="doge-tag"]').forEach(function (el) {
+      el.textContent = '\u00D0 ' + clean;
+      el.title = 'Personalized Dogecoin badge: ' + clean;
+    });
+    triggerAngularForce();
+    refreshHud();
+    return getPersona();
+  }
+
+  function getSettlement() {
+    const cents = Math.max(0, toInt(Store.meta('usdCents')) || 0);
+    return {
+      currency: CURRENCY,
+      amountCents: cents,
+      amountUsd: (cents / 100).toFixed(2),
+      mode: 'metadata-only'
+    };
+  }
+
+  function setSettlementUsd(currencyOrAmount, maybeAmount) {
+    let curr = CURRENCY;
+    let val = currencyOrAmount;
+    if (arguments.length >= 2 || (typeof currencyOrAmount === 'string' && /^[A-Za-z]{3,6}$/.test(str(currencyOrAmount)))) {
+      curr = str(currencyOrAmount).toUpperCase();
+      val = maybeAmount;
+    }
+    if (curr !== CURRENCY) {
+      throw new Error('USD ONLY: settlement metadata rejects non-USD currency "' + curr + '"');
+    }
+    const num = Number(val);
+    if (!isFinite(num) || num < 0) {
+      throw new Error('Invalid USD amount');
+    }
+    const cents = Math.round(num * 100);
+    Store.meta('usdCents', String(cents));
+    refreshHud();
+    return getSettlement();
+  }
+
+  function buildEightfold(clipOrUrl) {
+    let rec = null;
+    if (typeof clipOrUrl === 'string') {
+      rec = Store.get('clips', hash(clipOrUrl)) || normalizePayload({ url: clipOrUrl });
+    } else if (clipOrUrl && typeof clipOrUrl === 'object') {
+      rec = clipOrUrl.id && clipOrUrl.url ? clipOrUrl : normalizePayload(clipOrUrl);
+    }
+    if (!rec || !rec.url) return null;
+
+    const f1 = { brand: BRAND, version: VERSION, id: rec.id, url: rec.url, ext: rec.ext };
+    const f2 = {
+      durationMs: rec.durationMs,
+      durationLabel: rec.durationLabel,
+      width: rec.width,
+      height: rec.height,
+      pixels: rec.pixels,
+      is4k: !!rec.is4k
+    };
+    const f3 = { albumId: rec.albumId, albumTitle: rec.albumTitle, index: rec.index };
+    const f4 = { username: rec.username };
+    const f5 = {
+      registeredAt: rec.registeredAt,
+      lastSeen: rec.lastSeen,
+      seenCount: rec.seenCount,
+      source: rec.source
+    };
+    const f6 = getPersona();
+    const f7 = getSettlement();
+    const checksum = hash(JSON.stringify([f1, f2, f3, f4, f5, f6, f7]));
+    const f8 = { folds: 8, checksum: checksum, encodedAt: Date.now() };
+
+    return {
+      identity: f1,
+      media: f2,
+      movie: f3,
+      creator: f4,
+      lifecycle: f5,
+      persona: f6,
+      settlement: f7,
+      integrity: f8
+    };
+  }
+
+  function encodeEightfold(clipOrUrl) {
+    const env = buildEightfold(clipOrUrl);
+    if (!env) return null;
+    const token = 'ecr8.' + b64uEncode(JSON.stringify(env)) + '.' + env.integrity.checksum;
+    return { token: token, checksum: env.integrity.checksum, envelope: env };
+  }
+
+  function decodeEightfold(token) {
+    const raw = str(token);
+    const parts = raw.split('.');
+    if (parts.length !== 3 || parts[0] !== 'ecr8') {
+      return { valid: false, error: 'Malformed ecr8 token', envelope: null };
+    }
+    let env = null;
+    try {
+      env = JSON.parse(b64uDecode(parts[1]));
+    } catch (e) {
+      return { valid: false, error: 'Invalid base64url JSON payload', envelope: null };
+    }
+    if (!env || !env.integrity || env.integrity.folds !== 8) {
+      return { valid: false, error: 'Envelope does not contain 8 folds', envelope: null };
+    }
+    if (!env.settlement || env.settlement.currency !== CURRENCY) {
+      return { valid: false, error: 'USD ONLY violation in settlement fold', envelope: null };
+    }
+    const expected = hash(JSON.stringify([
+      env.identity,
+      env.media,
+      env.movie,
+      env.creator,
+      env.lifecycle,
+      env.persona,
+      env.settlement
+    ]));
+    if (expected !== parts[2] || expected !== env.integrity.checksum) {
+      return { valid: false, error: 'Eightfold checksum mismatch', envelope: null };
+    }
+    return { valid: true, error: null, envelope: env };
+  }
+
+  // ==========================================================================
+  // DECORATION + ANGULAR FORCE + IN-PAGE DOGECOIN HUD
   // ==========================================================================
   function injectStyles() {
     if (document.querySelector('style[' + ATTR + ']')) return;
     const style = document.createElement('style');
     style.setAttribute(ATTR, 'style');
     style.textContent =
-      '.' + CSS + '-badge{' +
-      'display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;' +
-      'font:600 11px/16px system-ui,sans-serif;vertical-align:middle;' +
-      'background:#111;color:#f5c518;border:1px solid #f5c518;' +
+      '@keyframes ' + CSS + '-torque{' +
+      '0%{transform:rotate(0deg) scale(1)}' +
+      '45%{transform:rotate(195deg) scale(1.14)}' +
+      '100%{transform:rotate(360deg) scale(1)}' +
       '}' +
-      '.' + CSS + '-badge-4k{background:#f5c518;color:#111;}' +
+      '.' + CSS + '-badge{' +
+      'display:inline-block;margin-left:6px;padding:0 7px;' +
+      'clip-path:polygon(5px 0,100% 0,calc(100% - 5px) 100%,0 100%);' +
+      'font:700 11px/17px system-ui,sans-serif;vertical-align:middle;' +
+      'background:#14120b;color:#f5c518;border:1px solid #c2a633;' +
+      'transition:transform .28s cubic-bezier(.22,1,.36,1);' +
+      '}' +
+      '.' + CSS + '-badge:hover{transform:skewX(-8deg) scale(1.06);}' +
+      '.' + CSS + '-badge-4k{background:linear-gradient(135deg,#f5c518,#c2a633);color:#14120b;}' +
+      '.' + CSS + '-doge-tag{' +
+      'display:inline-block;margin-left:6px;padding:0 7px;' +
+      'clip-path:polygon(5px 0,100% 0,calc(100% - 5px) 100%,0 100%);' +
+      'font:600 10px/16px ui-monospace,monospace;vertical-align:middle;' +
+      'background:#1b170c;color:#e8cf6a;border:1px solid #8c7320;' +
+      '}' +
+      '.' + CSS + '-emblem{' +
+      'display:inline-flex;align-items:center;justify-content:center;' +
+      'width:22px;height:22px;border-radius:50%;font:800 13px/1 system-ui,sans-serif;' +
+      'background:radial-gradient(circle at 30% 30%,#ffe270,#c2a633 70%,#7d6614);' +
+      'color:#14120b;box-shadow:0 0 8px rgba(245,197,24,.45);cursor:pointer;' +
+      '}' +
+      '.' + CSS + '-spin{animation:' + CSS + '-torque .62s cubic-bezier(.22,1,.36,1);}' +
       '.' + CSS + '-link{display:block;overflow:hidden;text-overflow:ellipsis;' +
-      'white-space:nowrap;font:11px/1.4 ui-monospace,monospace;opacity:.65;}';
+      'white-space:nowrap;font:11px/1.4 ui-monospace,monospace;opacity:.65;}' +
+      '.' + CSS + '-hud{' +
+      'position:fixed;right:10px;bottom:10px;z-index:99999;min-width:215px;' +
+      'background:rgba(20,18,11,.94);color:#f3e6b3;border:1px solid #c2a633;' +
+      'clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);' +
+      'padding:8px 10px;font:11px/1.4 system-ui,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.55);' +
+      '}' +
+      '.' + CSS + '-hud-head{display:flex;align-items:center;gap:7px;justify-content:space-between;}' +
+      '.' + CSS + '-hud-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin:7px 0;text-align:center;}' +
+      '.' + CSS + '-hud-cell{background:#211c10;padding:3px 4px;border:1px solid #4a3d16;}' +
+      '.' + CSS + '-hud-val{display:block;font:700 12px/1.2 ui-monospace,monospace;color:#f5c518;}' +
+      '.' + CSS + '-hud-row{display:flex;gap:4px;margin-top:5px;}' +
+      '.' + CSS + '-hud-btn{' +
+      'flex:1;background:#262011;color:#f5c518;border:1px solid #8c7320;padding:2px 5px;' +
+      'font:600 10px/1.4 system-ui,sans-serif;cursor:pointer;' +
+      '}' +
+      '.' + CSS + '-hud-input{' +
+      'flex:1;min-width:0;background:#120f08;color:#ffe270;border:1px solid #6b5718;' +
+      'padding:2px 5px;font:11px/1.3 ui-monospace,monospace;' +
+      '}';
     (document.head || document.documentElement).appendChild(style);
+  }
+
+  let torqueCount = 0;
+
+  function triggerAngularForce() {
+    torqueCount++;
+    const nodes = document.querySelectorAll('.' + CSS + '-emblem, [' + ATTR + '="badge"]');
+    nodes.forEach(function (el) {
+      el.classList.remove(CSS + '-spin');
+      // Retrigger keyframe cleanly without layout thrash when unavailable
+      if (el.offsetWidth) { /* reflow */ }
+      el.classList.add(CSS + '-spin');
+    });
+    return torqueCount;
   }
 
   /** Direct child of `parent` carrying our marker with this exact value. */
@@ -653,13 +885,19 @@
     return null;
   }
 
-  function ensureAnchor(sourceEl, videoEl, url) {
+  function ensureAnchor(sourceEl, videoEl, url, prevUrl) {
     const player = videoEl && videoEl.parentNode;
     const holder = player && player.parentNode;
     if (!holder || typeof holder.insertBefore !== 'function') return null;
 
     const a = brandChild(holder, 'link');
-    if (a) return a;
+    if (a) {
+      if (prevUrl && a.href === prevUrl && prevUrl !== url) {
+        a.href = url;
+        a.textContent = url;
+      }
+      return a;
+    }
     return createAnchor(holder, player, url);
   }
 
@@ -726,6 +964,200 @@
       badge.title = rec.width + 'x' + rec.height;
     } else if (badge) {
       badge.remove(); // resolution was provisional and turned out not to be 4K
+    }
+
+    let doge = brandChild(meta, 'doge-tag');
+    const persona = getPersona();
+    if (!doge) {
+      doge = document.createElement('span');
+      doge.setAttribute(ATTR, 'doge-tag');
+      doge.className = CSS + '-doge-tag';
+      meta.appendChild(doge);
+    }
+    doge.textContent = '\u00D0 ' + persona.tag;
+    doge.title = 'Personalized Dogecoin badge: ' + persona.tag;
+  }
+
+  let hudCollapsed = false;
+
+  function ensureHud() {
+    if (!document.body) return null;
+    let hud = document.querySelector('aside[' + ATTR + '="hud"]');
+    if (hud && document.body.contains(hud)) return hud;
+
+    hud = document.createElement('aside');
+    hud.setAttribute(ATTR, 'hud');
+    hud.className = CSS + '-hud';
+
+    const head = document.createElement('div');
+    head.setAttribute(ATTR, 'hud-head');
+    head.className = CSS + '-hud-head';
+
+    const left = document.createElement('div');
+    left.setAttribute(ATTR, 'hud-brand');
+    left.style.cssText = 'display:flex;align-items:center;gap:6px;';
+
+    const emblem = document.createElement('span');
+    emblem.setAttribute(ATTR, 'hud-emblem');
+    emblem.className = CSS + '-emblem';
+    emblem.textContent = '\u00D0';
+    emblem.title = 'Trigger Angular Force spin';
+    emblem.addEventListener('click', function () {
+      triggerAngularForce();
+    });
+
+    const title = document.createElement('strong');
+    title.setAttribute(ATTR, 'hud-persona');
+    title.style.color = '#ffe270';
+
+    left.appendChild(emblem);
+    left.appendChild(title);
+
+    const statePill = document.createElement('button');
+    statePill.setAttribute(ATTR, 'hud-toggle');
+    statePill.type = 'button';
+    statePill.className = CSS + '-hud-btn';
+    statePill.style.flex = '0 0 auto';
+    statePill.addEventListener('click', function () {
+      hudCollapsed = !hudCollapsed;
+      refreshHud();
+    });
+
+    head.appendChild(left);
+    head.appendChild(statePill);
+    hud.appendChild(head);
+
+    const body = document.createElement('div');
+    body.setAttribute(ATTR, 'hud-body');
+
+    const grid = document.createElement('div');
+    grid.setAttribute(ATTR, 'hud-grid');
+    grid.className = CSS + '-hud-grid';
+    [
+      ['clips', 'Clips'],
+      ['movies', 'Movies'],
+      ['users', 'Users'],
+      ['fourk', '4K']
+    ].forEach(function (pair) {
+      const cell = document.createElement('div');
+      cell.setAttribute(ATTR, 'hud-cell-' + pair[0]);
+      cell.className = CSS + '-hud-cell';
+      const val = document.createElement('span');
+      val.setAttribute(ATTR, 'hud-val-' + pair[0]);
+      val.className = CSS + '-hud-val';
+      val.textContent = '0';
+      const cap = document.createElement('span');
+      cap.textContent = pair[1];
+      cell.appendChild(val);
+      cell.appendChild(cap);
+      grid.appendChild(cell);
+    });
+    body.appendChild(grid);
+
+    const personaRow = document.createElement('div');
+    personaRow.className = CSS + '-hud-row';
+    const input = document.createElement('input');
+    input.setAttribute(ATTR, 'persona-input');
+    input.className = CSS + '-hud-input';
+    input.type = 'text';
+    input.maxLength = 32;
+    input.placeholder = 'Dogecoin tag';
+    input.value = getPersona().tag;
+    const applyBtn = document.createElement('button');
+    applyBtn.setAttribute(ATTR, 'persona-save');
+    applyBtn.type = 'button';
+    applyBtn.className = CSS + '-hud-btn';
+    applyBtn.style.flex = '0 0 auto';
+    applyBtn.textContent = 'Tag';
+    applyBtn.addEventListener('click', function () {
+      setPersona(input.value);
+    });
+    personaRow.appendChild(input);
+    personaRow.appendChild(applyBtn);
+    body.appendChild(personaRow);
+
+    const ctrlRow = document.createElement('div');
+    ctrlRow.className = CSS + '-hud-row';
+    const pauseBtn = document.createElement('button');
+    pauseBtn.setAttribute(ATTR, 'hud-pause');
+    pauseBtn.type = 'button';
+    pauseBtn.className = CSS + '-hud-btn';
+    pauseBtn.addEventListener('click', function () {
+      const st = Registry.status();
+      if (!st.active) Registry.start();
+      else if (st.paused) Registry.resume();
+      else Registry.pause();
+    });
+
+    const scanBtn = document.createElement('button');
+    scanBtn.setAttribute(ATTR, 'hud-rescan');
+    scanBtn.type = 'button';
+    scanBtn.className = CSS + '-hud-btn';
+    scanBtn.textContent = 'Scan';
+    scanBtn.addEventListener('click', function () {
+      Registry.rescan();
+      triggerAngularForce();
+      refreshHud();
+    });
+
+    const spinBtn = document.createElement('button');
+    spinBtn.setAttribute(ATTR, 'hud-spin');
+    spinBtn.type = 'button';
+    spinBtn.className = CSS + '-hud-btn';
+    spinBtn.textContent = 'Force';
+    spinBtn.addEventListener('click', function () {
+      triggerAngularForce();
+    });
+
+    ctrlRow.appendChild(pauseBtn);
+    ctrlRow.appendChild(scanBtn);
+    ctrlRow.appendChild(spinBtn);
+    body.appendChild(ctrlRow);
+
+    const foot = document.createElement('div');
+    foot.setAttribute(ATTR, 'hud-foot');
+    foot.style.cssText = 'margin-top:5px;font:10px/1.3 ui-monospace,monospace;opacity:.8;display:flex;justify-content:space-between;';
+    body.appendChild(foot);
+
+    hud.appendChild(body);
+    document.body.appendChild(hud);
+    return hud;
+  }
+
+  function refreshHud() {
+    if (typeof Registry === 'undefined' || !Registry || !document.body) return;
+    const hud = ensureHud();
+    if (!hud) return;
+
+    const st = Registry.status();
+    const persona = getPersona();
+    const settle = getSettlement();
+    const clipsMap = Store.all('clips');
+    let fourKTotal = 0;
+    Object.keys(clipsMap).forEach(function (k) {
+      if (clipsMap[k] && clipsMap[k].is4k) fourKTotal++;
+    });
+
+    const setTxt = function (mark, txt) {
+      const el = hud.querySelector('[' + ATTR + '="' + mark + '"]');
+      if (el && el.textContent !== txt) el.textContent = txt;
+    };
+
+    setTxt('hud-persona', '\u00D0 ' + persona.tag);
+    const stateLabel = !st.active ? 'STOP' : (st.paused ? 'PAUSED' : 'LIVE');
+    setTxt('hud-toggle', hudCollapsed ? stateLabel + ' +' : stateLabel + ' -');
+    setTxt('hud-val-clips', String(st.counts.clips));
+    setTxt('hud-val-movies', String(st.counts.movies));
+    setTxt('hud-val-users', String(st.counts.users));
+    setTxt('hud-val-fourk', String(fourKTotal));
+    setTxt('hud-pause', !st.active ? 'Start' : (st.paused ? 'Resume' : 'Pause'));
+    setTxt('hud-foot', '8-Fold | ' + settle.currency + ' $' + settle.amountUsd);
+
+    const body = hud.querySelector('[' + ATTR + '="hud-body"]');
+    if (body) body.style.display = hudCollapsed ? 'none' : '';
+    const input = hud.querySelector('[' + ATTR + '="persona-input"]');
+    if (input && document.activeElement !== input && input.value !== persona.tag) {
+      input.value = persona.tag;
     }
   }
 
@@ -796,10 +1228,11 @@
   // REGISTRY — continuous registration with full MutationObserver control
   // ==========================================================================
   const Registry = (function () {
-    // Element-level dedupe: each media node is registered exactly once per page
-    // life, so re-observing the same subtree never produces a duplicate row.
-    const registered = new WeakSet();
-    const metadataBound = new WeakSet();
+    // Element+URL dedupe: each media node is registered once per URL per page
+    // life, so re-observing the same subtree never produces a duplicate row,
+    // while a real src swap on an existing element is picked up cleanly.
+    const registered = new WeakMap();
+    const metadataState = new WeakMap();
 
     const queued = new Set();   // nodes waiting for the next animation frame
     const dropped = { count: 0 }; // "unused work": nodes discarded before render
@@ -848,29 +1281,37 @@
 
     function bindMetadata(cand, onChange) {
       const v = cand.videoEl;
-      if (!v || metadataBound.has(v)) return;
-      metadataBound.add(v);
+      if (!v) return;
+      const alreadyBound = metadataState.has(v);
+      metadataState.set(v, { keyEl: cand.keyEl, paint: onChange });
 
       const handler = function () {
-        const payload = readDomPayload(cand.keyEl, v, cand.url);
+        const state = metadataState.get(v);
+        if (!state) return;
+        const currentUrl = resolveSrc(state.keyEl) || resolveSrc(v) || cand.url;
+        const payload = readDomPayload(state.keyEl, v, currentUrl);
         const rec = recordClip(payload);
         syncSlider(v, rec);
-        if (rec) onChange(rec);
+        if (rec) state.paint(rec);
       };
 
-      ['loadedmetadata', 'resize', 'durationchange'].forEach(function (evt) {
-        v.addEventListener(evt, handler, { passive: true });
-      });
+      if (!alreadyBound) {
+        ['loadedmetadata', 'resize', 'durationchange'].forEach(function (evt) {
+          v.addEventListener(evt, handler, { passive: true });
+        });
+      }
       // If the metadata is already there, take it now instead of waiting.
       if (v.readyState >= 1) handler();
     }
 
     function registerCandidate(cand) {
       stats.scanned++;
-      if (registered.has(cand.keyEl)) return false;
-      registered.add(cand.keyEl);
+      const prevUrl = registered.get(cand.keyEl) || null;
+      if (prevUrl === cand.url) return false;
+      registered.set(cand.keyEl, cand.url);
 
-      const anchor = ensureAnchor(cand.keyEl, cand.videoEl, cand.url);
+      ensureSlider();
+      const anchor = ensureAnchor(cand.keyEl, cand.videoEl, cand.url, prevUrl);
       const initial = readDomPayload(cand.keyEl, cand.videoEl, cand.url);
       let rec = recordClip(initial);
 
@@ -929,18 +1370,24 @@
       // The observed root can be replaced wholesale by client-side rendering;
       // re-attach so registration truly never stops.
       if (observer && observedRoot && !document.contains(observedRoot)) reattach();
+      refreshHud();
+    }
+
+    function isOurs(node) {
+      if (!node || node.nodeType !== 1) return false;
+      if (typeof node.hasAttribute === 'function' && node.hasAttribute(ATTR)) return true;
+      if (typeof node.closest === 'function' && node.closest('[' + ATTR + ']')) return true;
+      return false;
     }
 
     function onMutations(records) {
       if (!active || paused) return;
       for (let i = 0; i < records.length; i++) {
         const m = records[i];
-        stats.mutations++;
-
         const target = m.target;
-        const ours = target && target.nodeType === 1 &&
-          typeof target.hasAttribute === 'function' && target.hasAttribute(ATTR);
-        if (ours) continue; // our own decoration — ignore, or we would loop forever
+        if (isOurs(target)) continue; // our own decoration / HUD — ignore, or we would loop forever
+
+        stats.mutations++;
 
         if (m.type === 'attributes') {
           if (target && target.nodeType === 1) queued.add(target);
@@ -951,7 +1398,7 @@
         for (let j = 0; j < added.length; j++) {
           const node = added[j];
           if (node.nodeType !== 1) continue;
-          if (node.hasAttribute && node.hasAttribute(ATTR)) continue; // ours
+          if (isOurs(node)) continue; // ours
           queued.add(node);
         }
       }
@@ -1017,6 +1464,7 @@
       window.addEventListener('pagehide', onPageHide, { passive: true });
       if (!healthTimer) healthTimer = window.setInterval(healthCheck, HEALTH_INTERVAL_MS);
       rescan(document);
+      refreshHud();
       return ok;
     }
 
@@ -1032,6 +1480,7 @@
       }
       observedRoot = null;
       window.removeEventListener('pagehide', onPageHide);
+      refreshHud();
     }
 
     function pause() {
@@ -1039,12 +1488,14 @@
       paused = true;
       if (frame) { window.cancelAnimationFrame(frame); frame = 0; }
       queued.clear();
+      refreshHud();
     }
 
     function resume() {
       if (!active) return start();
       paused = false;
       rescan(document);
+      refreshHud();
     }
 
     function rescan(root) {
@@ -1077,10 +1528,32 @@
           }
           if (live.length !== row.clipIds.length) {
             row.clipIds = live;
+            row.clipCount = live.length;
+            let total = 0;
+            let fourK = 0;
+            const albums = [];
+            live.forEach(function (id) {
+              const c = Store.get('clips', id);
+              if (!c) return;
+              if (toInt(c.durationMs) !== null) total += toInt(c.durationMs);
+              if (c.is4k) fourK++;
+              if (c.albumId && albums.indexOf(c.albumId) === -1) albums.push(c.albumId);
+            });
+            row.totalDurationMs = total;
+            row.fourKCount = fourK;
+            if (table === 'movies') {
+              row.totalDurationLabel = total ? formatDuration(total) : null;
+              row.has4k = fourK > 0;
+              row.updatedAt = Date.now();
+            } else {
+              row.albumIds = albums;
+              row.albumCount = albums.length;
+            }
             Store.set(table, key, row);
           }
         });
       });
+      refreshHud();
     }
 
     function status() {
@@ -1095,7 +1568,10 @@
         uptimeMs: startedAt && active ? Date.now() - startedAt : 0,
         queued: queued.size,
         droppedNodes: dropped.count,
-        storage: Store.usable ? 'localStorage' : 'memory',
+        torquePulses: torqueCount,
+        persona: getPersona(),
+        settlement: getSettlement(),
+        storage: Store.mode(),
         counts: {
           clips: Store.count('clips'),
           movies: Store.count('movies'),
@@ -1120,6 +1596,115 @@
   }());
 
   // ==========================================================================
+  // GENESIS DECLARATIVE LANGUAGE STACK
+  // --------------------------------------------------------------------------
+  // Deterministic, zero-eval command runner over EroClipRegistry tables,
+  // observer controls, Dogecoin personalization, USD-only settlement metadata,
+  // and Eightfold payload encoding.
+  // ==========================================================================
+  function runGenesis(program) {
+    const rawLines = String(program === undefined || program === null ? '' : program)
+      .split(/[\r\n;]+/);
+    const steps = [];
+    let lastResult = null;
+    let allOk = true;
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = str(rawLines[i]);
+      if (!line || line.indexOf('#') === 0 || line.indexOf('--') === 0) continue;
+
+      const tokens = line.split(/\s+/);
+      const op = tokens[0].toUpperCase();
+      const rest = str(line.slice(tokens[0].length));
+
+      try {
+        if (op === 'START') {
+          lastResult = Registry.start();
+        } else if (op === 'STOP') {
+          Registry.stop();
+          lastResult = Registry.status();
+        } else if (op === 'PAUSE') {
+          Registry.pause();
+          lastResult = Registry.status();
+        } else if (op === 'RESUME') {
+          Registry.resume();
+          lastResult = Registry.status();
+        } else if (op === 'SCAN' || op === 'RESCAN') {
+          Registry.rescan();
+          lastResult = Registry.status().counts;
+        } else if (op === 'PRUNE') {
+          Registry.prune();
+          lastResult = Registry.status().counts;
+        } else if (op === 'FORCE' || op === 'SPIN') {
+          lastResult = { torquePulses: triggerAngularForce() };
+        } else if (op === 'PERSONA') {
+          lastResult = setPersona(rest);
+        } else if (op === 'USD') {
+          lastResult = setSettlementUsd(CURRENCY, rest || '0');
+        } else if (op === 'SETTLE') {
+          const cur = tokens[1] || '';
+          const amt = tokens[2] !== undefined ? tokens[2] : '0';
+          lastResult = setSettlementUsd(cur, amt);
+        } else if (op === 'SELECT') {
+          const table = (tokens[1] || 'clips').toLowerCase();
+          if (table !== 'clips' && table !== 'movies' && table !== 'users') {
+            throw new Error('Unknown table "' + table + '" (expected clips, movies, or users)');
+          }
+          let rows = Object.values(Store.all(table));
+          const whereIdx = tokens.map(function (t) { return t.toUpperCase(); }).indexOf('WHERE');
+          if (whereIdx !== -1) {
+            const conds = tokens.slice(whereIdx + 1);
+            conds.forEach(function (cond) {
+              const lc = cond.toLowerCase();
+              if (lc === '4k' || lc === 'is4k=true') {
+                rows = rows.filter(function (r) { return !!(r.is4k || r.has4k || r.fourKCount > 0); });
+              } else if (lc.indexOf('user=') === 0) {
+                const u = cond.slice(5);
+                rows = rows.filter(function (r) { return r.username === u; });
+              } else if (lc.indexOf('movie=') === 0) {
+                const m = cond.slice(6);
+                rows = rows.filter(function (r) { return r.albumId === m; });
+              } else if (lc.indexOf('minsec=') === 0) {
+                const msMin = (Number(cond.slice(7)) || 0) * 1000;
+                rows = rows.filter(function (r) {
+                  const d = r.durationMs !== undefined ? r.durationMs : r.totalDurationMs;
+                  return (toInt(d) || 0) >= msMin;
+                });
+              }
+            });
+          }
+          lastResult = rows;
+        } else if (op === 'ENCODE') {
+          const arg = str(rest);
+          if (!arg || arg.toUpperCase() === 'ALL') {
+            lastResult = Object.values(Store.all('clips')).map(encodeEightfold).filter(Boolean);
+          } else {
+            const single = encodeEightfold(arg);
+            if (!single) throw new Error('Unable to encode "' + arg + '"');
+            lastResult = single;
+          }
+        } else {
+          throw new Error('Unknown Genesis op "' + op + '"');
+        }
+        steps.push({ line: line, op: op, ok: true, output: lastResult });
+      } catch (err) {
+        allOk = false;
+        const msg = err && err.message ? err.message : String(err);
+        steps.push({ line: line, op: op, ok: false, error: msg });
+        lastResult = null;
+      }
+    }
+
+    return {
+      ok: allOk,
+      brand: BRAND,
+      version: VERSION,
+      steps: steps,
+      result: lastResult
+    };
+  }
+
+  // ==========================================================================
   // PUBLIC CONTROL SURFACE
   // --------------------------------------------------------------------------
   // One branded global with full control over the observer and the registry.
@@ -1142,20 +1727,36 @@
     users: function () { return Store.all('users'); },
     clip: function (url) { return Store.get('clips', hash(url)); },
 
+    persona: getPersona,
+    personalize: setPersona,
+    settlement: getSettlement,
+    setUsd: setSettlementUsd,
+    angularForce: triggerAngularForce,
+
+    eightfold: buildEightfold,
+    encodeEightfold: encodeEightfold,
+    decodeEightfold: decodeEightfold,
+    genesis: runGenesis,
+
     export: function () {
+      const clips = Store.all('clips');
       return JSON.stringify({
         brand: BRAND,
         version: VERSION,
         exportedAt: new Date().toISOString(),
-        clips: Store.all('clips'),
+        persona: getPersona(),
+        settlement: getSettlement(),
+        clips: clips,
         movies: Store.all('movies'),
-        users: Store.all('users')
+        users: Store.all('users'),
+        eightfold: Object.keys(clips).map(function (id) { return encodeEightfold(clips[id]); }).filter(Boolean)
       }, null, 2);
     },
 
     clear: function (table) {
-      if (table) { Store.clearTable(table); return; }
+      if (table) { Store.clearTable(table); refreshHud(); return; }
       ['clips', 'movies', 'users'].forEach(Store.clearTable);
+      refreshHud();
     },
 
     prune: Registry.prune,
@@ -1165,8 +1766,8 @@
   // ==========================================================================
   // MINIMUM-LENGTH SLIDER (v1.0 behaviour, preserved)
   // ==========================================================================
-  const showSlider = function () {
-    const div = document.body.appendChild(document.createElement('div'));
+  function showSlider() {
+    const div = document.createElement('div');
     div.setAttribute(ATTR, 'slider');
     div.setAttribute('style', 'position:fixed; right:0px; top:50px');
     div.innerHTML = 'Minimal length:<br>';
@@ -1177,8 +1778,14 @@
     slider.setAttribute('type', 'range');
     slider.setAttribute('step', '1');
     slider.setAttribute('min', '1');
-    slider.setAttribute('max', '5');
+    let maxS = 5;
+    document.querySelectorAll('video').forEach((v) => {
+      const len = parseInt(v.dataset && v.dataset.length, 10);
+      if (!isNaN(len) && len > maxS) maxS = len;
+    });
+    slider.setAttribute('max', String(maxS));
     slider.setAttribute('value', '1');
+    document.body.appendChild(div);
     slider.addEventListener('input', () => {
       const minS = parseInt(slider.value);
       if (minS > 1) {
@@ -1258,12 +1865,17 @@
     document.location.reload();
   };
 
+  function ensureSlider() {
+    if (!document.body || document.getElementById('slider_min_length')) return;
+    if (document.querySelectorAll('video').length > 1) {
+      showSlider();
+    }
+  }
+
   // ==========================================================================
   // BOOT
   // ==========================================================================
-  if (document.querySelectorAll('video').length > 1) {
-    showSlider();
-  }
+  ensureSlider();
 
   const migrated = migrateLegacyDurations();
   if (migrated) Store.meta('migratedCount', String(migrated));
