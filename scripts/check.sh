@@ -37,7 +37,7 @@ require_node() {
 
 step_syntax() {
   local -a files=()
-  mapfile -t files < <(printf '%s\n' erome.user.js && find test -maxdepth 1 -name '*.test.js' -type f | sort)
+  mapfile -t files < <(printf '%s\n' erome.user.js app.js sw.js scripts/serve.js && find test -maxdepth 1 -name '*.test.js' -type f | sort)
   ((${#files[@]} > 0)) || die "no JavaScript files found"
   local file
   for file in "${files[@]}"; do

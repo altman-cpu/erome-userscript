@@ -1,0 +1,42 @@
+# GRID//CORE — response headers
+#
+# Read by Cloudflare Pages and Netlify at deploy time (no server code involved).
+# Rule blocks are evaluated top to bottom; a later block for a specific path
+# replaces the generic one for that header only.
+#
+# Why each of these exists:
+#   * HSTS + nosniff + referrer-policy   — no downgrade, no MIME sniffing, no
+#                                          referrer leaking a probed URL
+#   * Content-Security-Policy            — same policy as the <meta> tag in
+#                                          index.html; both apply, so they are
+#                                          kept byte-identical
+#   * Permissions-Policy                 — this page never needs a device API
+#   * Cache-Control: no-cache            — a deploy must be visible on the next
+#                                          load; the service worker owns caching
+#   * Service-Worker-Allowed: /          — sw.js may claim the whole origin
+#                                          instead of only its own directory
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'none'; form-action 'none'
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: no-cache
+
+/sw.js
+  Cache-Control: no-cache
+  Service-Worker-Allowed: /
+
+/app.js
+  Cache-Control: no-cache
+
+/styles.css
+  Cache-Control: no-cache
+
+/erome.user.js
+  Cache-Control: no-cache
+  Content-Type: text/javascript; charset=utf-8

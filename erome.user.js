@@ -2,7 +2,7 @@
 // @name         erome.com video length
 // @namespace    https://github.com/drdre1/
 // @icon         https://www.erome.com/favicon.ico
-// @version      2.3.0
+// @version      2.4.0
 // @description  Duration of video on erome.com, with duration filtering and a videos-only album mode
 // @author       drdre1
 // @match        https://www.erome.com/*
