@@ -1,9 +1,11 @@
 {
   "name": "erome-userscript",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
-  "description": "Tampermonkey/Greasemonkey userscript that shows video durations on erome.com albums and filters by length",
+  "description": "Client-first GRID//CORE control panel plus a Tampermonkey/Greasemonkey userscript that shows video durations on erome.com albums and filters by length",
   "scripts": {
+    "start": "node scripts/serve.js",
+    "serve": "node scripts/serve.js",
     "test": "node --test test/*.test.js",
     "check": "bash scripts/check.sh syntax",
     "lint:sh": "bash scripts/lint-shell.sh",

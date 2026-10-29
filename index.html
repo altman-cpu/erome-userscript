@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#04070b">
+<title>GRID//CORE — erome-userscript operations terminal</title>
+<meta name="description" content="Client-first control panel for the erome.com video-length userscript: probe queue telemetry, duration cache, privacy profiles and service-worker routing. No build step, no trackers.">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2304070b'/%3E%3Cpath d='M3 3h4v4H3zM9 9h4v4H9zM9 3h4v4H9zM3 9h4v4H3z' fill='%2322e6a0'/%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to console</a>
+
+<div class="grid-backdrop" aria-hidden="true"></div>
+<div class="scanline" aria-hidden="true"></div>
+
+<header class="masthead">
+  <div class="brand">
+    <p class="brand-mark">GRID<span class="brand-slash">//</span>CORE</p>
+    <p class="brand-sub">erome-userscript · operations terminal</p>
+  </div>
+
+  <div class="status-strip">
+    <span class="status-item" id="build-tag">v1.0.0</span>
+    <span class="status-item" id="clock" aria-live="off">--:--:--</span>
+    <span class="status-item status-link" id="link-state" data-state="idle" data-online="true">LINK · IDLE</span>
+    <span class="status-item" id="gpc-badge" data-state="off">GPC · OFF</span>
+    <span class="status-item" id="sw-state" data-state="off">SW · CHECKING</span>
+  </div>
+</header>
+
+<nav class="hud-nav" aria-label="Console sections">
+  <a href="#telemetry">01 · Telemetry</a>
+  <a href="#profiles">02 · Profiles</a>
+  <a href="#diagnostics">03 · Diagnostics</a>
+  <a href="#worker">04 · Worker</a>
+  <a href="#console">05 · Stream</a>
+</nav>
+
+<main id="main">
+
+  <section class="panel" id="telemetry" aria-labelledby="telemetry-title">
+    <div class="panel-head">
+      <h2 id="telemetry-title"><span class="panel-index">01</span> Telemetry &amp; probe queue</h2>
+      <p class="panel-note">Three probes at a time, duplicates collapsed, cache hits short-circuit before any request leaves the tab.</p>
+    </div>
+
+    <ul class="stat-grid" aria-label="Engine counters">
+      <li class="stat" data-tone="queued"><span class="stat-label">queued</span><span class="stat-value" id="stat-queued">0</span></li>
+      <li class="stat" data-tone="active"><span class="stat-label">in flight</span><span class="stat-value" id="stat-active">0</span></li>
+      <li class="stat" data-tone="ok"><span class="stat-label">resolved</span><span class="stat-value" id="stat-ok">0</span></li>
+      <li class="stat" data-tone="fail"><span class="stat-label">failed</span><span class="stat-value" id="stat-failed">0</span></li>
+      <li class="stat" data-tone="dup"><span class="stat-label">collapsed</span><span class="stat-value" id="stat-deduped">0</span></li>
+      <li class="stat" data-tone="cache"><span class="stat-label">cache hits</span><span class="stat-value" id="stat-hits">0</span></li>
+      <li class="stat" data-tone="bytes"><span class="stat-label">bytes read</span><span class="stat-value" id="stat-bytes">0 B</span></li>
+    </ul>
+
+    <div class="probe-console">
+      <label class="field" for="probe-input">
+        <span class="field-label">Target queue</span>
+        <textarea id="probe-input" name="probe-input" rows="5" spellcheck="false" placeholder="One URL per line, or use demo://mp4/95.5 for a synthetic container" aria-describedby="probe-help"></textarea>
+      </label>
+      <p class="field-help" id="probe-help">
+        Only <code>https:</code>, <code>http:</code> and the local <code>demo:</code> scheme are read, and only the first
+        256&nbsp;KB of a file (plus a 512&nbsp;KB tail for MP4s that keep <code>moov</code> at the end). Ctrl/⌘&nbsp;+&nbsp;Enter runs the queue.
+      </p>
+
+      <div class="control-row">
+        <button type="button" class="btn btn-primary" id="probe-run" data-state="idle">Run probe sweep</button>
+        <button type="button" class="btn" id="probe-demo">Load synthetic targets</button>
+        <button type="button" class="btn btn-quiet" id="probe-clear">Clear</button>
+        <label class="toggle" for="same-origin">
+          <input type="checkbox" id="same-origin" checked>
+          <span>Same-origin lock</span>
+        </label>
+      </div>
+
+      <p class="summary" id="probe-summary" role="status">standing by · 0 targets</p>
+
+      <div class="table-wrap">
+        <table class="hud-table">
+          <caption>Probe results, newest first</caption>
+          <thead>
+            <tr>
+              <th scope="col">target</th>
+              <th scope="col">state</th>
+              <th scope="col">duration</th>
+              <th scope="col">bytes</th>
+              <th scope="col">tries</th>
+              <th scope="col">elapsed</th>
+            </tr>
+          </thead>
+          <tbody id="probe-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="profiles" aria-labelledby="profiles-title">
+    <div class="panel-head">
+      <h2 id="profiles-title"><span class="panel-index">02</span> Privacy profiles &amp; cache</h2>
+      <p class="panel-note">One switch decides what is stored, for how long, and whether targets are ever printed.</p>
+    </div>
+
+    <fieldset class="profile-grid" id="policy-grid">
+      <legend class="visually-hidden">Caching profile</legend>
+
+      <label class="profile-card">
+        <input type="radio" name="profile" value="standard" checked>
+        <span class="profile-name">STANDARD</span>
+        <span class="profile-meta">30 d · 500 entries · URLs logged</span>
+        <span class="profile-copy">Durations remembered for 30 days, probe targets printed in full, worker keeps the shell plus previously probed assets.</span>
+      </label>
+
+      <label class="profile-card">
+        <input type="radio" name="profile" value="hardened">
+        <span class="profile-name">HARDENED</span>
+        <span class="profile-meta">24 h · 150 entries · URLs redacted</span>
+        <span class="profile-copy">Short-lived cache, targets masked in the stream, worker limited to the app shell.</span>
+      </label>
+
+      <label class="profile-card">
+        <input type="radio" name="profile" value="ghost">
+        <span class="profile-name">GHOST</span>
+        <span class="profile-meta">no storage · memory only</span>
+        <span class="profile-copy">Nothing is written to storage and nothing is remembered across reloads. Enforced automatically when Global Privacy Control is on.</span>
+      </label>
+    </fieldset>
+
+    <p class="policy-note" id="policy-note" role="status">policy</p>
+
+    <div class="cache-head">
+      <dl class="cache-stats">
+        <div><dt>entries</dt><dd id="cache-count">0</dd></div>
+        <div><dt>approx. size</dt><dd id="cache-bytes">0 B</dd></div>
+        <div><dt>mode</dt><dd id="cache-mode">—</dd></div>
+      </dl>
+      <div class="control-row">
+        <button type="button" class="btn" id="cache-refresh">Refresh</button>
+        <button type="button" class="btn" id="cache-export">Export JSON</button>
+        <button type="button" class="btn btn-danger" id="cache-purge">Purge cache</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="hud-table">
+        <caption>Duration cache</caption>
+        <thead>
+          <tr>
+            <th scope="col">target</th>
+            <th scope="col">duration</th>
+            <th scope="col">age</th>
+          </tr>
+        </thead>
+        <tbody id="cache-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="diagnostics" aria-labelledby="diagnostics-title">
+    <div class="panel-head">
+      <h2 id="diagnostics-title"><span class="panel-index">03</span> Diagnostics</h2>
+      <p class="panel-note">The same parsers the userscript ships with, exercised against synthetic WebM and MP4 containers built in the browser.</p>
+    </div>
+
+    <div class="control-row">
+      <button type="button" class="btn btn-primary" id="selftest-run">Run self-test</button>
+      <p class="summary" id="selftest-summary" data-state="idle" role="status">not run yet</p>
+    </div>
+
+    <div class="table-wrap">
+      <table class="hud-table">
+        <caption>Self-test results</caption>
+        <thead>
+          <tr>
+            <th scope="col">check</th>
+            <th scope="col">verdict</th>
+            <th scope="col">detail</th>
+          </tr>
+        </thead>
+        <tbody id="selftest-rows"></tbody>
+      </table>
+    </div>
+
+    <div class="userscript-block">
+      <div class="panel-head panel-head-tight">
+        <h3>Installed userscript</h3>
+        <p class="panel-note"><code>erome.user.js</code> is read from this origin — nothing is fetched from a third party.</p>
+      </div>
+      <dl class="userscript-meta" id="userscript-meta">
+        <dt>status</dt>
+        <dd>reading…</dd>
+      </dl>
+      <div class="control-row">
+        <a class="btn" id="userscript-install" href="erome.user.js" download>Download userscript</a>
+        <button type="button" class="btn" id="userscript-refresh">Re-read metadata</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="worker" aria-labelledby="worker-title">
+    <div class="panel-head">
+      <h2 id="worker-title"><span class="panel-index">04</span> Service worker</h2>
+      <p class="panel-note">Precached shell for offline loads, network-first for documents, stale-while-revalidate for probed media. Cross-origin requests always pass straight through.</p>
+    </div>
+    <div class="control-row">
+      <button type="button" class="btn" id="sw-update" hidden>Activate update</button>
+      <button type="button" class="btn btn-danger" id="sw-purge">Purge worker caches</button>
+      <button type="button" class="btn btn-quiet" id="sw-unregister">Unregister</button>
+    </div>
+  </section>
+
+</main>
+
+<footer class="console-footer" id="console">
+  <div class="console-head">
+    <h2><span class="panel-index">05</span> Stream</h2>
+    <button type="button" class="btn btn-quiet" id="console-clear">Clear stream</button>
+  </div>
+  <ol class="console-log" id="console-log" aria-live="polite" aria-relevant="additions"></ol>
+  <p class="console-foot">
+    Client-only. No analytics, no third-party requests, no cookies. Unlicense or GPL-3.0-or-later.
+  </p>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js" defer></script>
+</body>
+</html>
