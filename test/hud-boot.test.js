@@ -262,3 +262,66 @@ test('clearing the queue empties the table', () => {
   assert.equal(ids.get('probe-rows').children.length, 0);
   assert.equal(ids.get('probe-input').value, '');
 });
+
+function selectProfile(value) {
+  const input = profileInputs.find((candidate) => candidate.value === value);
+  input.checked = true;
+  input.dispatch('change');
+}
+
+test('the per-host limit selects rebuild the engine and persist the choice', () => {
+  // Persistence is profile-driven: STANDARD remembers, GHOST does not.
+  selectProfile('standard');
+  const perHost = ids.get('limit-per-host');
+  const cooldown = ids.get('limit-cooldown');
+  perHost.value = '1';
+  cooldown.value = '15000';
+  perHost.dispatch('change');
+
+  assert.equal(global.localStorage.getItem('hud~limits'), JSON.stringify({ perHostConcurrency: 1, cooldownBaseMs: 15000 }));
+  const stream = ids.get('console-log').children.map((line) => textOf(line)).join('\n');
+  assert.match(stream, /limits → 1\/host · cooldown 15s base/);
+
+  cooldown.value = '0';
+  cooldown.dispatch('change');
+  assert.match(
+    ids.get('console-log').children.map((line) => textOf(line)).join('\n'),
+    /cooldown off/,
+  );
+});
+
+test('a throttled host shows up in the per-host table', async () => {
+  selectProfile('standard');
+  const originalFetch = global.window.fetch;
+
+  // A healthy host first, so the sweep has finished before we assert on it.
+  global.window.fetch = (url, init) => {
+    requests.push({ url, init });
+    return Promise.resolve(new Response(core.buildMp4Fixture(30), { status: 206 }));
+  };
+  const input = ids.get('probe-input');
+  input.value = 'https://cdn.test/a.mp4';
+  ids.get('probe-run').dispatch('click');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(ids.get('host-rows').children[0].children[0].textContent, 'cdn.test');
+
+  // Now a host that throttles. The board updates while the retry backs off
+  // and, under GHOST, the hostname is a stable pseudonym instead of the name.
+  selectProfile('ghost');
+  assert.match(textOf(ids.get('host-rows').children[0]), /no host activity yet/);
+
+  global.window.fetch = (url, init) => {
+    requests.push({ url, init });
+    return Promise.resolve(new Response('', { status: 429 }));
+  };
+  input.value = 'https://cdn.test/b.mp4';
+  ids.get('probe-run').dispatch('click');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  global.window.fetch = originalFetch;
+
+  const rows = ids.get('host-rows').children;
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].children[0].textContent, /^host-[0-9a-z]{4}$/);
+  assert.ok(Number(rows[0].children[3].textContent) >= 1, 'a 429 is recorded as a throttle signal');
+  assert.match(ids.get('probe-summary').textContent, /scanning|resolved/);
+});

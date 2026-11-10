@@ -16,7 +16,7 @@
  */
 
 (function () {
-  const HUD_VERSION = '1.0.0';
+  const HUD_VERSION = '1.1.0';
 
   /* ------------------------------------------------------------------ *
    * Constants
@@ -30,7 +30,13 @@
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const CACHE_MAX_ENTRIES = 500;
   const PROFILE_KEY = 'profile';
+  const LIMITS_KEY = 'limits';
   const PROBE_LIMIT = 40;
+  const DEFAULT_PER_HOST_CONCURRENCY = 2;
+  const DEFAULT_THROTTLES_BEFORE_COOLDOWN = 2;
+  const DEFAULT_COOLDOWN_BASE_MS = 5000;
+  const DEFAULT_COOLDOWN_MAX_MS = 60000;
+
   const LOG_LIMIT = 240;
   const ROW_LIMIT = 80;
 
@@ -820,6 +826,13 @@
    * fail fast on 403/404/416 and metadata-less files.
    * ------------------------------------------------------------------ */
 
+  function nonNegativeInt(value, fallback) {
+    if (!Number.isInteger(value) || value < 0) {
+      return fallback;
+    }
+    return value;
+  }
+
   function positiveInt(value, fallback, minimum) {
     if (!Number.isInteger(value) || value < (minimum === undefined ? 1 : minimum)) {
       return fallback;
@@ -853,6 +866,10 @@
     const cache = options.cache || null;
     const cacheEnabled = options.cacheEnabled === undefined ? true : Boolean(options.cacheEnabled);
     const sameOriginOnly = options.sameOriginOnly === true;
+    const perHostConcurrency = positiveInt(options.perHostConcurrency, DEFAULT_PER_HOST_CONCURRENCY);
+    const throttlesBeforeCooldown = positiveInt(options.throttlesBeforeCooldown, DEFAULT_THROTTLES_BEFORE_COOLDOWN);
+    const cooldownBaseMs = nonNegativeInt(options.cooldownBaseMs, DEFAULT_COOLDOWN_BASE_MS);
+    const cooldownMaxMs = positiveInt(options.cooldownMaxMs, DEFAULT_COOLDOWN_MAX_MS);
     const origin = typeof options.origin === 'string' ? options.origin : null;
     const allowTail = options.allowTail !== false;
     const base = options.base;
@@ -869,11 +886,96 @@
       bytes: 0,
       requests: 0,
       blocked: 0,
+      cooldowns: 0,
     };
     const waiting = [];
     const pending = new Map();
+    const hostSlots = new Map();
     let active = 0;
+    let wakeTimer = null;
     let disposed = false;
+
+    /* ---------------- per-host limits ---------------- */
+
+    function hostKey(target) {
+      try {
+        const parsed = new URL(target);
+        return parsed.protocol === 'demo:' ? 'demo' : parsed.host || 'unknown';
+      } catch (error) {
+        return 'unknown';
+      }
+    }
+
+    function hostSlot(host) {
+      if (!hostSlots.has(host)) {
+        hostSlots.set(host, {
+          host,
+          active: 0,
+          ok: 0,
+          failed: 0,
+          throttled: 0,
+          streak: 0,
+          cooldownUntil: 0,
+        });
+      }
+      return hostSlots.get(host);
+    }
+
+    /** A host is throttled-sick when it answered with a rate-limit signal. */
+    function isThrottleSignal(error) {
+      return error === 'timeout' || error === 'http-408' || error === 'http-425' || error === 'http-429' || /^http-5\d\d$/.test(error);
+    }
+
+    function armCooldown(slot) {
+      if (cooldownBaseMs <= 0 || slot.streak < throttlesBeforeCooldown) {
+        return 0;
+      }
+      const overflow = slot.streak - throttlesBeforeCooldown;
+      const wait = Math.min(cooldownMaxMs, cooldownBaseMs * Math.pow(2, overflow));
+      const until = clock() + wait;
+      if (until <= slot.cooldownUntil) {
+        return 0;
+      }
+      slot.cooldownUntil = until;
+      stats.cooldowns += 1;
+      emit('cooldown', { host: slot.host, waitMs: wait, throttled: slot.throttled });
+      return wait;
+    }
+
+    function queuedForHost(host) {
+      let count = 0;
+      for (let i = 0; i < waiting.length; i += 1) {
+        if (waiting[i].host === host) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
+    function hostList() {
+      const now = clock();
+      const list = [];
+      hostSlots.forEach((slot) => {
+        const queued = queuedForHost(slot.host);
+        if (slot.active === 0 && queued === 0 && slot.throttled === 0 && slot.ok === 0 && slot.failed === 0) {
+          return;
+        }
+        list.push({
+          host: slot.host,
+          active: slot.active,
+          queued,
+          ok: slot.ok,
+          failed: slot.failed,
+          throttled: slot.throttled,
+          cooldownMs: Math.max(0, slot.cooldownUntil - now),
+        });
+      });
+      return list.sort((a, b) => b.active - a.active || b.queued - a.queued || a.host.localeCompare(b.host));
+    }
+
+    function snapshot() {
+      return Object.assign({}, stats, { queued: waiting.length, hosts: hostList() });
+    }
 
     function emit(kind, detail) {
       listeners.forEach((listener) => {
@@ -995,7 +1097,7 @@
       return { ok: false, retryable: false, error: 'no-duration', bytes };
     }
 
-    async function execute(task) {
+    async function execute(task, slot) {
       const started = clock();
       let attempts = 0;
       let lastError = 'network';
@@ -1004,7 +1106,11 @@
       while (attempts <= retries) {
         attempts += 1;
         if (attempts > 1) {
-          await sleep(backoff(attempts - 1));
+          // A retry never jumps the queue for its own host: if a cooldown was
+          // armed, wait it out as well as the normal backoff.
+          const cooldownLeft = Math.max(0, slot.cooldownUntil - clock());
+          const wait = Math.max(backoff(attempts - 1), Math.min(cooldownLeft, cooldownMaxMs));
+          await sleep(wait);
           if (disposed) {
             break;
           }
@@ -1013,6 +1119,7 @@
         lastBytes += outcome.read || outcome.bytes || 0;
         if (outcome.ok) {
           stats.bytes += lastBytes;
+          slot.streak = 0;
           return {
             ok: true,
             url: task.url,
@@ -1025,6 +1132,14 @@
           };
         }
         lastError = outcome.error;
+        if (isThrottleSignal(lastError)) {
+          slot.streak += 1;
+          slot.throttled += 1;
+          armCooldown(slot);
+          // Publish immediately: the throttle shows up on the host board while
+          // the retry is still backing off, instead of only when it settles.
+          emit('stats', snapshot());
+        }
         if (!outcome.retryable) {
           break;
         }
@@ -1048,33 +1163,89 @@
     function settle(task, result) {
       active -= 1;
       stats.active = active;
+      const slot = hostSlot(task.host);
+      slot.active = Math.max(0, slot.active - 1);
       pending.delete(task.url);
       task.resolve(result);
       if (result.ok) {
         stats.ok += 1;
+        slot.ok += 1;
         if (cache && cacheEnabled) {
           cache.set(task.url, result.durationMs);
         }
       } else {
         stats.failed += 1;
+        slot.failed += 1;
       }
       emit('settled', result);
-      emit('stats', Object.assign({}, stats));
+      emit('stats', snapshot());
       pump();
     }
 
+    /**
+     * Starts every task that is allowed to run right now. A task needs both a
+     * free global slot and a free slot for its own host, and it may not be in
+     * that host's cooldown. When nothing is ready because of a cooldown, a
+     * single timer wakes the queue when the earliest cooldown expires.
+     */
     function pump() {
-      while (!disposed && active < concurrency && waiting.length > 0) {
-        const task = waiting.shift();
-        active += 1;
-        stats.active = active;
-        stats.queued = waiting.length;
-        emit('stats', Object.assign({}, stats));
-        execute(task).then(
-          (result) => settle(task, result),
-          () => settle(task, { ok: false, url: task.url, error: 'internal', attempts: 1, bytes: 0, elapsedMs: 0 }),
-        );
+      if (disposed) {
+        return;
       }
+      let started = true;
+      while (started && active < concurrency) {
+        started = false;
+        const now = clock();
+        for (let i = 0; i < waiting.length; i += 1) {
+          const task = waiting[i];
+          const slot = hostSlot(task.host);
+          if (slot.active >= perHostConcurrency) {
+            continue;
+          }
+          if (slot.cooldownUntil > now) {
+            continue;
+          }
+          waiting.splice(i, 1);
+          slot.active += 1;
+          active += 1;
+          stats.active = active;
+          stats.queued = waiting.length;
+          emit('stats', snapshot());
+          execute(task, slot).then(
+            (result) => settle(task, result),
+            () => settle(task, { ok: false, url: task.url, error: 'internal', attempts: 1, bytes: 0, elapsedMs: 0 }),
+          );
+          started = true;
+          break;
+        }
+      }
+      stats.queued = waiting.length;
+      scheduleWake();
+    }
+
+    function scheduleWake() {
+      if (disposed) {
+        return;
+      }
+      let soonest = 0;
+      const now = clock();
+      waiting.forEach((task) => {
+        const slot = hostSlot(task.host);
+        if (slot.cooldownUntil > now && (soonest === 0 || slot.cooldownUntil < soonest)) {
+          soonest = slot.cooldownUntil;
+        }
+      });
+      if (wakeTimer !== null) {
+        clearTimer(wakeTimer);
+        wakeTimer = null;
+      }
+      if (soonest === 0) {
+        return;
+      }
+      wakeTimer = setTimer(() => {
+        wakeTimer = null;
+        pump();
+      }, Math.max(1, soonest - now));
     }
 
     function failure(target, url, error, extra) {
@@ -1086,7 +1257,19 @@
 
     return {
       stats() {
-        return Object.assign({}, stats);
+        return snapshot();
+      },
+      hosts() {
+        return hostList();
+      },
+      limits() {
+        return {
+          concurrency,
+          perHostConcurrency,
+          throttlesBeforeCooldown,
+          cooldownBaseMs,
+          cooldownMaxMs,
+        };
       },
       on(listener) {
         listeners.add(listener);
@@ -1134,7 +1317,7 @@
           return result;
         });
         pending.set(href, wrapped);
-        waiting.push({ url: href, target: href, resolve: resolver });
+        waiting.push({ url: href, target: href, host: hostKey(href), resolve: resolver });
         stats.queued = waiting.length;
         emit('queued', { url: href });
         pump();
@@ -1147,11 +1330,15 @@
           pending.delete(task.url);
           task.resolve({ ok: false, url: task.url, error: 'cancelled', attempts: 0, bytes: 0, elapsedMs: 0 });
         });
-        emit('stats', Object.assign({}, stats));
+        emit('stats', snapshot());
         return dropped.length;
       },
       dispose() {
         disposed = true;
+        if (wakeTimer !== null) {
+          clearTimer(wakeTimer);
+          wakeTimer = null;
+        }
         const dropped = waiting.splice(0, waiting.length);
         dropped.forEach((task) => {
           pending.delete(task.url);
@@ -1312,6 +1499,10 @@
       statDeduped: byId('stat-deduped'),
       statBytes: byId('stat-bytes'),
       statHits: byId('stat-hits'),
+      statCooldowns: byId('stat-cooldowns'),
+      limitPerHost: byId('limit-per-host'),
+      limitCooldown: byId('limit-cooldown'),
+      hostRows: byId('host-rows'),
       probeInput: byId('probe-input'),
       probeRun: byId('probe-run'),
       probeDemo: byId('probe-demo'),
@@ -1393,6 +1584,20 @@
       state.toastTimer = setTimeout(() => nodes.toast.classList.remove('is-visible'), 2600);
     }
 
+    /** Stable, opaque label for a host so limits stay visible without the name. */
+    function redactHost(host) {
+      if (state.policy && state.policy.logUrls) {
+        return host;
+      }
+      let hash = 0x811c9dc5;
+      const text = String(host);
+      for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      return `host-${hash.toString(36).slice(-4).padStart(4, '0')}`;
+    }
+
     function redact(url) {
       if (state.policy && state.policy.logUrls) {
         return url;
@@ -1443,10 +1648,42 @@
       setText(nodes.statDeduped, stats.deduped);
       setText(nodes.statBytes, formatBytes(stats.bytes));
       setText(nodes.statHits, stats.cacheHits);
+      setText(nodes.statCooldowns, stats.cooldowns || 0);
+      renderHosts(stats.hosts || []);
       const busy = stats.active > 0 || stats.queued > 0;
       if (nodes.linkState) {
         nodes.linkState.dataset.state = busy ? 'busy' : 'idle';
       }
+    }
+
+    function renderHosts(hosts) {
+      if (!nodes.hostRows) {
+        return;
+      }
+      const fragment = doc.createDocumentFragment();
+      if (hosts.length === 0) {
+        const tr = element('tr', 'empty-row');
+        const td = element('td', '', 'no host activity yet');
+        td.colSpan = 5;
+        tr.appendChild(td);
+        fragment.appendChild(tr);
+      } else {
+        hosts.forEach((host) => {
+          const tr = element('tr');
+          const name = element('td', 'col-target', redactHost(host.host));
+          name.title = state.policy && state.policy.logUrls ? host.host : 'host redacted by policy';
+          const cooldown = host.cooldownMs > 0 ? `${Math.ceil(host.cooldownMs / 1000)}s` : '—';
+          tr.append(
+            name,
+            cell(String(host.active), 'col-attempts'),
+            cell(String(host.queued), 'col-attempts'),
+            cell(String(host.throttled), 'col-attempts'),
+            cell(cooldown, 'col-age'),
+          );
+          fragment.appendChild(tr);
+        });
+      }
+      nodes.hostRows.replaceChildren(fragment);
     }
 
     /* ---------- policy ---------- */
@@ -1478,6 +1715,61 @@
       } catch (error) {
         /* storage refused; the choice just will not survive a reload */
       }
+    }
+
+    function loadLimits() {
+      const fallback = {
+        perHostConcurrency: DEFAULT_PER_HOST_CONCURRENCY,
+        cooldownBaseMs: DEFAULT_COOLDOWN_BASE_MS,
+      };
+      const store = safeStorage();
+      if (!store) {
+        return fallback;
+      }
+      try {
+        const raw = store.getItem(SETTINGS_PREFIX + LIMITS_KEY);
+        if (!raw) {
+          return fallback;
+        }
+        const parsed = JSON.parse(raw);
+        return {
+          perHostConcurrency: positiveInt(parsed.perHostConcurrency, DEFAULT_PER_HOST_CONCURRENCY),
+          cooldownBaseMs: nonNegativeInt(parsed.cooldownBaseMs, DEFAULT_COOLDOWN_BASE_MS),
+        };
+      } catch (error) {
+        return fallback;
+      }
+    }
+
+    function saveLimits() {
+      const store = safeStorage();
+      if (!store) {
+        return;
+      }
+      const payload = {
+        perHostConcurrency: Number(nodes.limitPerHost ? nodes.limitPerHost.value : DEFAULT_PER_HOST_CONCURRENCY),
+        cooldownBaseMs: Number(nodes.limitCooldown ? nodes.limitCooldown.value : DEFAULT_COOLDOWN_BASE_MS),
+      };
+      try {
+        if (state.policy && state.policy.remember) {
+          store.setItem(SETTINGS_PREFIX + LIMITS_KEY, JSON.stringify(payload));
+        } else {
+          store.removeItem(SETTINGS_PREFIX + LIMITS_KEY);
+        }
+      } catch (error) {
+        /* storage refused; the knobs still work for this session */
+      }
+    }
+
+    function currentLimits() {
+      return {
+        perHostConcurrency: nodes.limitPerHost
+          ? positiveInt(Number(nodes.limitPerHost.value), DEFAULT_PER_HOST_CONCURRENCY)
+          : DEFAULT_PER_HOST_CONCURRENCY,
+        cooldownBaseMs: nodes.limitCooldown
+          ? nonNegativeInt(Number(nodes.limitCooldown.value), DEFAULT_COOLDOWN_BASE_MS)
+          : DEFAULT_COOLDOWN_BASE_MS,
+      };
     }
 
     function renderPolicy() {
@@ -1560,9 +1852,12 @@
       if (state.engine) {
         state.engine.dispose();
       }
+      const limits = currentLimits();
       state.engine = createEngine({
         fetch: fetchImpl,
         concurrency: 3,
+        perHostConcurrency: limits.perHostConcurrency,
+        cooldownBaseMs: limits.cooldownBaseMs,
         retries: 2,
         cache: state.cache,
         cacheEnabled: state.policy.cacheEnabled,
@@ -1586,6 +1881,9 @@
         }
         if (kind === 'cache-hit' && detail) {
           log('info', `cache hit ${redact(detail.url)}`);
+        }
+        if (kind === 'cooldown' && detail) {
+          log('warn', `${redactHost(detail.host)} cooling down ${Math.round(detail.waitMs / 1000)}s after ${detail.throttled} throttle signal(s)`);
         }
       });
       renderTelemetry();
@@ -1948,6 +2246,23 @@
         });
       }
 
+      [nodes.limitPerHost, nodes.limitCooldown].forEach((select) => {
+        if (!select) {
+          return;
+        }
+        select.addEventListener('change', () => {
+          saveLimits();
+          rebuildEngine();
+          const limits = currentLimits();
+          log(
+            'info',
+            `limits → ${limits.perHostConcurrency}/host · cooldown ${
+              limits.cooldownBaseMs === 0 ? 'off' : `${limits.cooldownBaseMs / 1000}s base`
+            }`,
+          );
+        });
+      });
+
       nodes.probeRun.addEventListener('click', runProbes);
       nodes.probeClear.addEventListener('click', () => {
         nodes.probeInput.value = '';
@@ -2046,6 +2361,13 @@
     /* ---------- boot sequence ---------- */
 
     setText(nodes.buildTag, `v${HUD_VERSION}`);
+    const savedLimits = loadLimits();
+    if (nodes.limitPerHost) {
+      nodes.limitPerHost.value = String(savedLimits.perHostConcurrency);
+    }
+    if (nodes.limitCooldown) {
+      nodes.limitCooldown.value = String(savedLimits.cooldownBaseMs);
+    }
     tickClock();
     setInterval(tickClock, 1000);
     renderConnectivity();
@@ -2069,6 +2391,10 @@
     PROFILES,
     CACHE_PREFIX,
     SETTINGS_PREFIX,
+    DEFAULT_PER_HOST_CONCURRENCY,
+    DEFAULT_THROTTLES_BEFORE_COOLDOWN,
+    DEFAULT_COOLDOWN_BASE_MS,
+    DEFAULT_COOLDOWN_MAX_MS,
     formatDuration,
     formatBytes,
     formatAge,

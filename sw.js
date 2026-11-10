@@ -20,7 +20,7 @@
  * announced to all windows, so two tabs never disagree about the shell version.
  */
 
-const SW_VERSION = '1.0.0';
+const SW_VERSION = '1.1.0';
 const CACHE_PREFIX = 'gridcore-';
 const CACHE_VERSION = `${CACHE_PREFIX}v${SW_VERSION}`;
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;

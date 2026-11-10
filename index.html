@@ -56,6 +56,7 @@
       <li class="stat" data-tone="fail"><span class="stat-label">failed</span><span class="stat-value" id="stat-failed">0</span></li>
       <li class="stat" data-tone="dup"><span class="stat-label">collapsed</span><span class="stat-value" id="stat-deduped">0</span></li>
       <li class="stat" data-tone="cache"><span class="stat-label">cache hits</span><span class="stat-value" id="stat-hits">0</span></li>
+      <li class="stat" data-tone="cool"><span class="stat-label">cooldowns</span><span class="stat-value" id="stat-cooldowns">0</span></li>
       <li class="stat" data-tone="bytes"><span class="stat-label">bytes read</span><span class="stat-value" id="stat-bytes">0 B</span></li>
     </ul>
 
@@ -79,6 +80,33 @@
         </label>
       </div>
 
+      <div class="limit-row" role="group" aria-label="Per-host rate limits">
+        <label class="field-inline" for="limit-per-host">
+          <span class="field-label">per-host cap</span>
+          <select id="limit-per-host" name="limit-per-host">
+            <option value="1">1 request</option>
+            <option value="2" selected>2 requests</option>
+            <option value="3">3 requests</option>
+            <option value="4">4 requests</option>
+            <option value="6">6 requests</option>
+          </select>
+        </label>
+        <label class="field-inline" for="limit-cooldown">
+          <span class="field-label">cooldown after 2 throttles</span>
+          <select id="limit-cooldown" name="limit-cooldown">
+            <option value="0">off</option>
+            <option value="5000" selected>5 s</option>
+            <option value="15000">15 s</option>
+            <option value="60000">60 s</option>
+          </select>
+        </label>
+        <p class="field-help limit-help">
+          Caps apply per hostname, not per page: ten targets on one CDN film no faster than the cap.
+          A host that answers <code>429</code>, <code>5xx</code> or times out twice in a row is put on a
+          doubling cooldown (base × 2ⁿ, capped at 60 s); other hosts keep running.
+        </p>
+      </div>
+
       <p class="summary" id="probe-summary" role="status">standing by · 0 targets</p>
 
       <div class="table-wrap">
@@ -95,6 +123,22 @@
             </tr>
           </thead>
           <tbody id="probe-rows"></tbody>
+        </table>
+      </div>
+
+      <div class="table-wrap host-wrap">
+        <table class="hud-table">
+          <caption>Per-host limits</caption>
+          <thead>
+            <tr>
+              <th scope="col">host</th>
+              <th scope="col">in flight</th>
+              <th scope="col">queued</th>
+              <th scope="col">throttled</th>
+              <th scope="col">cooldown</th>
+            </tr>
+          </thead>
+          <tbody id="host-rows"></tbody>
         </table>
       </div>
     </div>

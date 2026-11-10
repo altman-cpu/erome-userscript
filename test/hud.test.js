@@ -546,3 +546,238 @@ test('the shell description matches what the files actually contain', () => {
   assert.ok(html.includes('id="probe-rows"'));
   assert.ok(html.includes('name="profile"'));
 });
+
+/* ------------------------------------------------------------------ *
+ * Per-host rate limiting
+ * ------------------------------------------------------------------ */
+
+function slowFetch(peak) {
+  const inFlight = new Map();
+  return (url) => {
+    const host = new URL(url).host;
+    inFlight.set(host, (inFlight.get(host) || 0) + 1);
+    peak.set(host, Math.max(peak.get(host) || 0, inFlight.get(host)));
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        inFlight.set(host, inFlight.get(host) - 1);
+        resolve(mp4Response(5));
+      }, 8);
+    });
+  };
+}
+
+test('limits() reports the defaults', () => {
+  const engine = core.createEngine({ fetch: () => Promise.resolve(mp4Response(1)), retries: 0 });
+  const limits = engine.limits();
+  engine.dispose();
+  assert.equal(limits.concurrency, 3);
+  assert.equal(limits.perHostConcurrency, core.DEFAULT_PER_HOST_CONCURRENCY);
+  assert.equal(limits.throttlesBeforeCooldown, core.DEFAULT_THROTTLES_BEFORE_COOLDOWN);
+  assert.equal(limits.cooldownBaseMs, core.DEFAULT_COOLDOWN_BASE_MS);
+  assert.equal(limits.cooldownMaxMs, core.DEFAULT_COOLDOWN_MAX_MS);
+});
+
+test('the per-host cap holds even when the global budget is free', async () => {
+  const peak = new Map();
+  const engine = core.createEngine({ fetch: slowFetch(peak), concurrency: 6, perHostConcurrency: 1, retries: 0 });
+  const results = await Promise.all([
+    engine.probe('https://a.test/1.mp4'),
+    engine.probe('https://a.test/2.mp4'),
+    engine.probe('https://a.test/3.mp4'),
+  ]);
+  const hosts = engine.hosts();
+  engine.dispose();
+  assert.equal(results.every((result) => result.ok), true);
+  assert.equal(peak.get('a.test'), 1, 'one request at a time per host');
+  assert.equal(hosts.length, 1);
+  assert.equal(hosts[0].host, 'a.test');
+  assert.equal(hosts[0].ok, 3);
+  assert.equal(hosts[0].active, 0);
+});
+
+test('two hosts still run in parallel, each within its own cap', async () => {
+  const peak = new Map();
+  const order = [];
+  const inner = slowFetch(peak);
+  const fetch = (url) => {
+    order.push(new URL(url).host);
+    return inner(url);
+  };
+  const engine = core.createEngine({ fetch, concurrency: 6, perHostConcurrency: 1, retries: 0 });
+  await Promise.all([
+    engine.probe('https://a.test/1.mp4'),
+    engine.probe('https://a.test/2.mp4'),
+    engine.probe('https://b.test/1.mp4'),
+    engine.probe('https://b.test/2.mp4'),
+  ]);
+  engine.dispose();
+  assert.equal(peak.get('a.test'), 1);
+  assert.equal(peak.get('b.test'), 1);
+  // The second request to leave the queue must belong to the other host: a
+  // per-host cap that serialised everything would start a.test twice in a row.
+  assert.deepEqual(order.slice(0, 2).sort(), ['a.test', 'b.test']);
+});
+
+test('an unknown host defaults to the same cap', async () => {
+  const peak = new Map();
+  const engine = core.createEngine({ fetch: slowFetch(peak), concurrency: 4, perHostConcurrency: 1, retries: 0 });
+  await Promise.all([
+    engine.probe('https://a.test/1.mp4'),
+    engine.probe('https://a.test/2.mp4'),
+  ]);
+  const [host] = engine.hosts();
+  engine.dispose();
+  assert.equal(host.host, 'a.test');
+  assert.equal(host.queued, 0);
+});
+
+test('repeated throttling arms a cooldown that delays the next probe for that host only', async () => {
+  const fetch = (url) => {
+    if (new URL(url).host === 'slow.test') {
+      return Promise.resolve(new Response('', { status: 429 }));
+    }
+    return Promise.resolve(mp4Response(12));
+  };
+  const engine = core.createEngine({
+    fetch,
+    concurrency: 4,
+    perHostConcurrency: 1,
+    retries: 0,
+    throttlesBeforeCooldown: 2,
+    cooldownBaseMs: 40,
+    cooldownMaxMs: 200,
+  });
+
+  await engine.probe('https://slow.test/1.mp4');
+  await engine.probe('https://slow.test/2.mp4');
+  assert.equal(engine.stats().cooldowns, 1, 'second throttle arms the cooldown');
+
+  const started = Date.now();
+  const blocked = engine.probe('https://slow.test/3.mp4');
+  const healthy = await engine.probe('https://fast.test/1.mp4');
+  const blockedResult = await blocked;
+  const waited = Date.now() - started;
+  const hosts = engine.hosts();
+  engine.dispose();
+
+  assert.equal(healthy.ok, true, 'the healthy host is never held up');
+  assert.equal(blockedResult.ok, false);
+  assert.equal(blockedResult.error, 'http-429');
+  assert.ok(waited >= 25, `expected the cooldown to delay the probe, waited ${waited} ms`);
+
+  const slow = hosts.find((entry) => entry.host === 'slow.test');
+  assert.equal(slow.throttled, 3);
+  assert.equal(slow.failed, 3);
+});
+
+test('the cooldown doubles per extra throttle and stays capped', async () => {
+  const fetch = () => Promise.resolve(new Response('', { status: 429 }));
+  const engine = core.createEngine({
+    fetch,
+    perHostConcurrency: 1,
+    retries: 0,
+    throttlesBeforeCooldown: 1,
+    cooldownBaseMs: 10,
+    cooldownMaxMs: 20,
+  });
+  await engine.probe('https://a.test/1.mp4');
+  const first = engine.hosts()[0].cooldownMs;
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await engine.probe('https://a.test/2.mp4');
+  const second = engine.hosts()[0].cooldownMs;
+  engine.dispose();
+  assert.ok(first > 0 && first <= 20, `first cooldown ${first}`);
+  assert.ok(second > 0 && second <= 20, `second cooldown ${second}`);
+});
+
+test('a cooldown can be switched off entirely', async () => {
+  const fetch = () => Promise.resolve(new Response('', { status: 429 }));
+  const engine = core.createEngine({
+    fetch,
+    perHostConcurrency: 1,
+    retries: 0,
+    throttlesBeforeCooldown: 1,
+    cooldownBaseMs: 0,
+  });
+  const started = Date.now();
+  await Promise.all([
+    engine.probe('https://a.test/1.mp4'),
+    engine.probe('https://a.test/2.mp4'),
+    engine.probe('https://a.test/3.mp4'),
+  ]);
+  const elapsed = Date.now() - started;
+  const hosts = engine.hosts();
+  engine.dispose();
+  assert.equal(engine.stats().cooldowns, 0);
+  assert.equal(hosts[0].cooldownMs, 0);
+  assert.equal(hosts[0].throttled, 3);
+  assert.ok(elapsed < 40, `no cooldown should mean no waiting, took ${elapsed} ms`);
+});
+
+test('a success clears the throttle streak before it reaches the threshold', async () => {
+  let call = 0;
+  const fetch = () => {
+    call += 1;
+    return Promise.resolve(call === 2 ? mp4Response(7) : new Response('', { status: 429 }));
+  };
+  const engine = core.createEngine({
+    fetch,
+    perHostConcurrency: 1,
+    retries: 0,
+    throttlesBeforeCooldown: 2,
+    cooldownBaseMs: 30,
+  });
+  await engine.probe('https://a.test/1.mp4');
+  await engine.probe('https://a.test/2.mp4');
+  await engine.probe('https://a.test/3.mp4');
+  const stats = engine.stats();
+  engine.dispose();
+  assert.equal(stats.ok, 1);
+  assert.equal(stats.cooldowns, 0, 'the streak was reset by the success');
+});
+
+test('a retry waits out the cooldown it just caused', async () => {
+  const fetch = () => Promise.resolve(new Response('', { status: 429 }));
+  const engine = core.createEngine({
+    fetch,
+    perHostConcurrency: 1,
+    retries: 1,
+    retryBaseMs: 1,
+    throttlesBeforeCooldown: 1,
+    cooldownBaseMs: 30,
+    cooldownMaxMs: 60,
+    random: () => 0,
+  });
+  const started = Date.now();
+  const result = await engine.probe('https://a.test/1.mp4');
+  const elapsed = Date.now() - started;
+  engine.dispose();
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts, 2);
+  assert.ok(elapsed >= 20, `retry should have waited, took ${elapsed} ms`);
+});
+
+test('the demo scheme is its own host bucket', async () => {
+  const fetch = () => Promise.resolve(mp4Response(3));
+  const engine = core.createEngine({ fetch, perHostConcurrency: 1, retries: 0 });
+  await engine.probe('https://a.test/1.mp4');
+  await engine.probe('demo://mp4/3');
+  const hosts = engine.hosts().map((entry) => entry.host).sort();
+  engine.dispose();
+  assert.deepEqual(hosts, ['a.test', 'demo']);
+});
+
+test('hosts() forgets nothing it has seen and reports zeroed counters', async () => {
+  const fetch = () => Promise.resolve(mp4Response(4));
+  const engine = core.createEngine({ fetch, retries: 0 });
+  await engine.probe('https://a.test/1.mp4');
+  const fresh = core.createEngine({ fetch, retries: 0 });
+  assert.deepEqual(fresh.hosts(), []);
+  fresh.dispose();
+  const [host] = engine.hosts();
+  engine.dispose();
+  assert.equal(host.active, 0);
+  assert.equal(host.queued, 0);
+  assert.equal(host.throttled, 0);
+  assert.equal(host.cooldownMs, 0);
+});

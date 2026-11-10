@@ -32,7 +32,10 @@ Keyboard: <kbd>/</kbd> focuses the target queue, <kbd>Ctrl</kbd>/<kbd>⌘</kbd> 
 Every network call goes through one engine (`createEngine` in `app.js`); nothing else
 in the page calls `fetch`:
 
-* three probes at a time, duplicate in-flight targets collapsed into one request;
+* three probes at a time **globally**, and a separate cap per hostname (default 2,
+  adjustable 1–6) so ten targets on one CDN cannot stampede it while the global
+  budget still serves other hosts in parallel;
+* duplicate in-flight requests for the same target collapse into one probe;
 * cache hits return before a request is made;
 * only `http:`, `https:` and the local `demo:` scheme are accepted — `javascript:`,
   `file:` and friends are rejected before any request exists;
@@ -41,7 +44,13 @@ in the page calls `fetch`:
   at the end; bodies are read through a capped stream and the reader is cancelled,
   so a server that ignores `Range` cannot stream a whole file into memory;
 * `429`/`408`/`5xx`, timeouts and network errors retry with capped, jittered
-  exponential backoff; `403`/`404`/`416` fail immediately.
+  exponential backoff; `403`/`404`/`416` fail immediately;
+* after two throttling signals in a row a host is put on a **doubling cooldown**
+  (5 s base, `×2ⁿ`, capped at 60 s, or off entirely). Cooled-down hosts are
+  skipped by the scheduler, other hosts keep running, and a retry never jumps
+  its own host's cooldown. The **Per-host limits** board shows in-flight,
+  queued, throttled and the remaining cooldown per hostname — redacted to a
+  stable `host-xxxx` pseudonym under `HARDENED`/`GHOST`.
 
 ### Privacy profiles
 
@@ -171,6 +180,20 @@ preference and avoid storing data itself.
 * Private browsing or blocked storage degrades to an in-memory cache.
 * In Tampermonkey 5+ with MV3, enable *Allow User Scripts* and check that
   `GM.xmlHttpRequest` is granted, otherwise no file can be probed.
+
+## Changes in 2.5
+
+* **Per-host rate limiting** in the proxy engine: `perHostConcurrency` (default
+  2), `throttlesBeforeCooldown` (default 2), a doubling cooldown from
+  `cooldownBaseMs` (default 5 s) capped at `cooldownMaxMs` (60 s), and a
+  scheduler that wakes exactly once when the earliest cooldown expires instead
+  of polling. `engine.hosts()` and `engine.limits()` expose the state.
+* **Live per-host board** under the telemetry panel, with two selects for the
+  cap and the cooldown. The choice is remembered under `STANDARD`/`HARDENED`
+  and deliberately forgotten under `GHOST`.
+* Throttle signals now publish immediately, so a `429` appears on the board
+  while the retry is still backing off rather than only when it settles.
+* HUD `1.1.0`, worker cache namespace `1.1.0`, 13 new tests (182 total).
 
 ## Changes in 2.4
 
